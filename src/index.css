@@ -1,0 +1,232 @@
+@import "tailwindcss";
+
+:root {
+  font-family: 'Plus Jakarta Sans', Roboto, -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background-color: #f8fafc;
+  color: #0f172a;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ==========================================================================
+   Android Phone Native App Look & Feel (Mobile-First Density & Compact Typography)
+   ========================================================================== */
+@media (max-width: 640px) {
+  :root {
+    /* Scale down the rem basis from 16px to 13.5px on mobile phones.
+       This scales all Tailwind classes (text-*, p-*, m-*, gap-*, h-*, w-*, rounded-*)
+       by ~15.6%, fitting all cards, dashboards, tables, and buttons cleanly without
+       unwanted word-wrapping or overflowing, matching native Android Material density. */
+    font-size: 13.5px;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* Prevent oversized heading wrap on small phone screens */
+  h1 {
+    font-size: 1.25rem !important;
+    line-height: 1.25 !important;
+  }
+  h2 {
+    font-size: 1.05rem !important;
+    line-height: 1.3 !important;
+  }
+  h3 {
+    font-size: 0.95rem !important;
+    line-height: 1.3 !important;
+  }
+
+  /* Compact button and control padding on mobile */
+  button, input, select, textarea {
+    touch-action: manipulation;
+  }
+
+  /* Native touch feedback on buttons */
+  button:active, a:active {
+    transform: scale(0.97);
+    transition: transform 0.08s ease;
+  }
+
+  /* Android App bottom safe area and compact container padding */
+  #app_main {
+    padding-left: 0.5rem !important;  /* 8px side margins */
+    padding-right: 0.5rem !important; /* 8px side margins */
+    padding-top: 0.5rem !important;   /* 8px top */
+    padding-bottom: 5.5rem !important; /* give clean clearance for bottom navigation */
+  }
+
+  /* Header compact height and clean padding */
+  #app_header {
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+    padding-top: 0.35rem !important;
+    padding-bottom: 0.35rem !important;
+  }
+
+  /* Android Material 3 Card Border Radii (16px instead of oversized 24-32px) */
+  .rounded-3xl {
+    border-radius: 1.125rem !important; /* 18px */
+  }
+
+  /* Form controls and inputs: comfortable Android touch height (40-44px) */
+  input, select, textarea {
+    font-size: 0.95rem !important;
+  }
+
+  /* Dense tables on mobile for professional Android dashboard look */
+  table th {
+    padding: 0.35rem 0.5rem !important;
+    font-size: 0.6875rem !important;
+    letter-spacing: 0.025em !important;
+  }
+  table td {
+    padding: 0.4rem 0.5rem !important;
+    font-size: 0.75rem !important;
+  }
+
+  /* Material 3 Bottom Navigation Bar */
+  #bottom_nav {
+    height: 3.5rem !important; /* 56px standard Android bottom nav bar */
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 4px) !important;
+  }
+
+  #bottom_nav > div {
+    height: 3.5rem !important;
+  }
+
+  #bottom_nav button {
+    padding-top: 0.2rem !important;
+    padding-bottom: 0.2rem !important;
+  }
+
+  #bottom_nav button div {
+    padding-top: 0.2rem !important;
+    padding-bottom: 0.2rem !important;
+    padding-left: 0.85rem !important;
+    padding-right: 0.85rem !important;
+    border-radius: 9999px !important; /* Pill shaped indicator */
+  }
+
+  #bottom_nav button svg {
+    width: 1.125rem !important;
+    height: 1.125rem !important;
+  }
+
+  #bottom_nav button span {
+    font-size: 0.6875rem !important; /* 11px */
+  }
+}
+
+/* Extra small phone screens (e.g. 360px Android devices) */
+@media (max-width: 380px) {
+  :root {
+    /* Higher density scaling for narrow Android screens */
+    font-size: 12.5px;
+  }
+
+  #app_main {
+    padding-left: 0.375rem !important;
+    padding-right: 0.375rem !important;
+  }
+}
+
+/* Subtle focus indicators for clean accessibility */
+*:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #059669;
+}
+
+/* Always visible custom scrollbars for table wrappers */
+.overflow-x-auto, .overflow-y-auto, .overflow-auto {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f8fafc;
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Landscape Mode Responsive Optimizations for Mobile Screens */
+@media (orientation: landscape) and (max-height: 600px) {
+  /* Expand top level containers to utilize the wide horizontal landscape width */
+  #app_root {
+    width: 100% !important;
+  }
+
+  #app_main {
+    max-width: 100% !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+    padding-top: 0.75rem !important;
+    padding-bottom: 3.5rem !important;
+  }
+
+  #app_header > div {
+    max-width: 100% !important;
+  }
+
+  #bottom_nav {
+    height: 3.25rem !important;
+  }
+
+  #bottom_nav > div {
+    max-width: 100% !important;
+    height: 3.25rem !important;
+  }
+
+  /* Optimize tables in landscape mode so more columns fit cleanly at once */
+  .overflow-x-auto table {
+    width: 100% !important;
+    font-size: 0.8125rem !important; /* 13px */
+  }
+
+  .overflow-x-auto table th {
+    padding: 0.5rem 0.625rem !important;
+    font-size: 0.6875rem !important; /* 11px uppercase */
+  }
+
+  .overflow-x-auto table td {
+    padding: 0.5rem 0.625rem !important;
+  }
+
+  /* Reveal hidden detail columns when device is rotated to landscape mode */
+  .landscape-col-show,
+  .landscape-show-table-cell {
+    display: table-cell !important;
+  }
+
+  .landscape-show-flex {
+    display: flex !important;
+  }
+
+  .landscape-show-block {
+    display: block !important;
+  }
+
+  /* Compact form rows and modals for short landscape screens */
+  .landscape-compact-modal {
+    max-height: 85vh !important;
+    overflow-y: auto !important;
+  }
+}

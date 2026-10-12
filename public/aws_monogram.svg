@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="100%" height="100%">
+  <g transform="translate(10, 10)">
+    <!-- Outer composite interlocking monogram shape -->
+    <!-- Unified Monogram Graphic matching uploaded AWS Logo -->
+    <g fill="#8f8e8c" stroke="#3d332e" stroke-width="8" stroke-linejoin="round" stroke-linecap="round">
+      <!-- 'A' Left Section -->
+      <path d="M 280 200 C 230 220, 180 260, 150 330 C 120 400, 120 480, 140 560 C 150 600, 170 640, 200 680 L 230 730 L 290 750 L 320 620 L 260 620 L 240 550 L 320 550 L 300 420 L 210 420 L 260 270 Z M 215 480 L 240 480 L 225 450 Z" />
+
+      <!-- 'W' Center Section with High Vertical Stem -->
+      <path d="M 370 140 L 440 680 L 390 680 L 330 400 L 280 680 L 230 680 L 270 240 L 320 240 L 350 520 L 320 140 Z" />
+
+      <!-- 'S' Right Sweeping Loop Section -->
+      <path d="M 520 220 C 600 230, 670 270, 700 340 C 730 410, 710 470, 640 510 C 560 550, 520 580, 530 640 C 540 700, 620 730, 700 700 C 740 685, 770 650, 790 610 L 820 640 C 790 700, 740 750, 650 770 C 530 800, 440 730, 420 620 C 400 500, 480 440, 570 400 C 640 370, 660 340, 650 300 C 640 260, 580 240, 510 260 C 460 275, 420 305, 390 350 L 350 320 C 390 260, 450 225, 520 220 Z" />
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,8 @@
+{
+  "name": "Remix New Version Farms",
+  "description": "Comprehensive poultry and incubator management app for tracking egg hatching, farm operations, sales, and client records in Cameroon.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

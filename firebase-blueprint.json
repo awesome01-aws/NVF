@@ -1,0 +1,188 @@
+{
+  "entities": {
+    "users": {
+      "title": "User",
+      "description": "System operators and admin user accounts",
+      "properties": {
+        "id": { "type": "string" },
+        "username": { "type": "string" },
+        "name": { "type": "string" },
+        "passwordHash": { "type": "string" }
+      }
+    },
+    "clients": {
+      "title": "Client",
+      "description": "Hatchery client details and overdraft balances",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "mark": { "type": "string" },
+        "phone": { "type": "string" },
+        "location": { "type": "string" },
+        "overdraft": { "type": "number" }
+      }
+    },
+    "incubator_records": {
+      "title": "Incubator Record",
+      "description": "Egg incubation batches, candling, and hatching milestones",
+      "properties": {
+        "id": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientName": { "type": "string" },
+        "clientMark": { "type": "string" },
+        "eggType": { "type": "string" },
+        "dateBrought": { "type": "string" },
+        "day8Date": { "type": "string" },
+        "day18Date": { "type": "string" },
+        "day21Date": { "type": "string" },
+        "eggsCollected": { "type": "number" },
+        "specialCase": { "type": "string" },
+        "ratePerEgg": { "type": "number" },
+        "amountDue": { "type": "number" },
+        "amountPaid": { "type": "number" },
+        "overdraftUsed": { "type": "number" },
+        "eggsAfterScan": { "type": "number" },
+        "chicksHatched": { "type": "number" },
+        "clientPhone": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    },
+    "flocks": {
+      "title": "Flock",
+      "description": "Poultry flocks for chicken and turkey",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "breed": { "type": "string" },
+        "quantity": { "type": "number" },
+        "ageWeeks": { "type": "number" },
+        "dateAdded": { "type": "string" },
+        "species": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    },
+    "feed_records": {
+      "title": "Feed Record",
+      "description": "Feed purchases and stock management",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "feedType": { "type": "string" },
+        "bagsBought": { "type": "number" },
+        "weightPerBag": { "type": "number" },
+        "costBag": { "type": "number" },
+        "totalCost": { "type": "number" },
+        "stockRemaining": { "type": "number" }
+      }
+    },
+    "poultry_sales": {
+      "title": "Poultry Sale",
+      "description": "Sales records for fowls, eggs, fertilized eggs, chicks, feed",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "itemType": { "type": "string" },
+        "quantity": { "type": "number" },
+        "unitPrice": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "buyerName": { "type": "string" },
+        "flockId": { "type": "string" },
+        "ageWeeks": { "type": "number" },
+        "notes": { "type": "string" }
+      }
+    },
+    "mortality": {
+      "title": "Mortality Log",
+      "description": "Mortality tracking per flock",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "flockId": { "type": "string" },
+        "flockName": { "type": "string" },
+        "quantity": { "type": "number" },
+        "cause": { "type": "string" }
+      }
+    },
+    "expenses": {
+      "title": "Expense",
+      "description": "Farm operating expenses",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "amount": { "type": "number" }
+      }
+    },
+    "cage_transfers": {
+      "title": "Cage Transfer",
+      "description": "Cage movement audit logs",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "flockId": { "type": "string" },
+        "flockName": { "type": "string" },
+        "species": { "type": "string" },
+        "breed": { "type": "string" },
+        "fromCage": { "type": "string" },
+        "toCage": { "type": "string" },
+        "quantity": { "type": "number" },
+        "ageWeeks": { "type": "number" },
+        "notes": { "type": "string" }
+      }
+    },
+    "cages": {
+      "title": "Cage Location",
+      "description": "Cage structure locations",
+      "properties": {
+        "id": { "type": "string" },
+        "blockName": { "type": "string" },
+        "cageName": { "type": "string" }
+      }
+    },
+    "cage_allocations": {
+      "title": "Cage Allocation",
+      "description": "Current active flock allocations across cages",
+      "properties": {
+        "id": { "type": "string" },
+        "blockName": { "type": "string" },
+        "cageName": { "type": "string" },
+        "flockName": { "type": "string" },
+        "species": { "type": "string" },
+        "quantity": { "type": "number" },
+        "ageWeeks": { "type": "number" },
+        "dateAdded": { "type": "string" },
+        "dateTransferred": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    },
+    "daily_egg_collections": {
+      "title": "Daily Egg Collection",
+      "description": "Daily Brahma and Turkey egg collection logs",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "brahmaEggs": { "type": "number" },
+        "turkeyEggs": { "type": "number" },
+        "totalEggs": { "type": "number" },
+        "recordedBy": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    },
+    "fowls_eaten": {
+      "title": "Fowls Eaten at Home",
+      "description": "Log of fowls consumed at home/kitchen subtracted from flock inventory",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "flockId": { "type": "string" },
+        "flockName": { "type": "string" },
+        "species": { "type": "string" },
+        "breed": { "type": "string" },
+        "quantity": { "type": "number" },
+        "ageWeeks": { "type": "number" },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669" />
+      <stop offset="50%" stop-color="#0f766e" />
+      <stop offset="100%" stop-color="#064e3b" />
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="24" fill="url(#bgGrad)" />
+  <circle cx="50" cy="50" r="44" stroke="#a7f3d0" stroke-opacity="0.4" stroke-width="2" stroke-dasharray="4 2" fill="none" />
+  
+  <!-- Egg Shape -->
+  <path
+    d="M 50 16 C 32 16, 22 42, 22 64 C 22 78, 34 88, 50 88 C 66 88, 78 78, 78 64 C 78 42, 68 16, 50 16 Z"
+    fill="rgba(251, 191, 36, 0.25)"
+    stroke="#fcd34d"
+    stroke-width="3.5"
+    stroke-linejoin="round"
+  />
+
+  <!-- Rooster Silhouette Crest inside Egg -->
+  <path
+    d="M 44 42 C 40 38, 38 32, 42 28 C 45 31, 48 29, 50 25 C 52 29, 55 31, 58 28 C 62 32, 60 38, 56 42"
+    fill="#fbbf24"
+    stroke="#fef08a"
+    stroke-width="1.5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Chick / Hatching Sprout Leaves -->
+  <path
+    d="M 50 78 C 50 62, 38 56, 32 58 C 38 68, 48 76, 50 78 Z"
+    fill="#6ee7b7"
+    stroke="#d1fae5"
+    stroke-width="1.5"
+  />
+  <path
+    d="M 50 78 C 50 62, 62 56, 68 58 C 62 68, 52 76, 50 78 Z"
+    fill="#5eead4"
+    stroke="#ccfbf1"
+    stroke-width="1.5"
+  />
+
+  <!-- Sun / Growth Ray Accent -->
+  <circle cx="50" cy="46" r="4" fill="#fcd34d" stroke="#fef08a" stroke-width="1" />
+</svg>

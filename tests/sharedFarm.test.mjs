@@ -1,0 +1,122 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { applyFarmAction, isProtectedFarmMutation } from '../src/lib/farmActions.ts';
+import { farmRecordViews, rabbitReminders, rabbitAgeDays, rabbitAgeLabel, rabbitChoices, selectedRabbitIds } from '../src/lib/farmViews.ts';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+
+function farm() { return { users: [], clients: [], incubator_records: [], flocks: [], feed_records: [], poultry_sales: [], mortality: [], expenses: [], cage_transfers: [] }; }
+const action = (db, id, kind, payload) => applyFarmAction(db, { id, kind, payload });
+test('shared housing, sales, deaths and household use follow one live rabbit inventory', () => {
+  const db = farm();
+  action(db, 'cage-0001', 'farm_cage_add', { animalType: 'Rabbit', blockName: 'Rabbit house', cageName: 'R1' });
+  action(db, 'cage-0002', 'farm_cage_add', { animalType: 'Rabbit', blockName: 'Rabbit house', cageName: 'R2' });
+  action(db, 'rabbit-a1', 'rabbit_add', { sex: 'female', name: 'Molly', date: '2026-09-01', birthDate: '2026-03-01', hutchId: 'cage-0001' });
+  action(db, 'rabbit-b1', 'rabbit_add', { sex: 'male', name: 'Max', date: '2026-09-01' });
+  action(db, 'litter-01', 'rabbit_litter', { date: '2026-09-02', doeId: 'rabbit-a1', buckId: 'rabbit-b1', quantity: 3 });
+  const choice = rabbitChoices(db).find(item => item.id === 'litter:litter-01');
+  assert.equal(choice.ids.length, 3);
+  assert.throws(() => selectedRabbitIds(db, choice.id, 4), /available/);
+  action(db, 'move-0001', 'rabbit_move', { date: '2026-09-03', rabbitIds: selectedRabbitIds(db, choice.id, 1), toHutchId: 'cage-0002' });
+  assert.equal(db.rabbits.filter(r => r.status === 'active' && r.hutchId === 'cage-0001').length, 3);
+  action(db, 'sold-0001', 'rabbit_sale', { date: '2026-09-04', rabbitIds: [choice.ids[0]], buyerName: 'Buyer', totalAmount: 2500 });
+  action(db, 'dead-0001', 'rabbit_loss', { date: '2026-09-04', rabbitIds: [choice.ids[1]], cause: 'Illness' });
+  action(db, 'eaten-001', 'rabbit_eaten', { date: '2026-09-04', rabbitIds: [choice.ids[2]] });
+  action(db, 'eaten-001', 'rabbit_eaten', { date: '2026-09-04', rabbitIds: [choice.ids[2]] });
+  assert.equal(db.rabbits.filter(r => r.status === 'active').length, 2);
+  assert.equal(db.rabbits.filter(r => r.status === 'active' && r.hutchId === 'cage-0002').length, 0);
+  const views = farmRecordViews(db);
+  assert.equal(views.poultry_sales.length, 1);
+  assert.equal(views.poultry_sales[0].itemType, 'Rabbit');
+  assert.equal(views.poultry_sales.reduce((n, s) => n + s.totalAmount, 0), 2500);
+  assert.equal(db.poultry_sales.length, 0, 'Rabbit projection must not create a second transaction');
+  assert.equal(views.mortality[0].quantity, 1);
+  assert.equal(views.fowls_eaten[0].species, 'Rabbit');
+  assert.ok(isProtectedFarmMutation(db, '/api/sales/sold-0001', 'DELETE'));
+  assert.ok(isProtectedFarmMutation(db, '/api/bulk-delete', 'POST', { type: 'sales', ids: ['sold-0001'] }));
+  for (const [id, kind, payload] of [['undo-001', 'rabbit_sale_void', { saleId: 'sold-0001' }], ['undo-002', 'rabbit_loss_void', { lossId: 'dead-0001' }], ['undo-003', 'rabbit_eaten_void', { recordId: 'eaten-001' }]]) action(db, id, kind, payload);
+  assert.equal(db.rabbits.filter(r => r.status === 'active').length, 5);
+  assert.equal(farmRecordViews(db).poultry_sales.length, 0);
+  assert.equal(farmRecordViews(db).mortality.length, 0);
+  assert.equal(farmRecordViews(db).fowls_eaten.length, 0);
+});
+
+test('quail household use updates cages once, reverses, and invalid actions leave no partial writes', () => {
+  const db = farm();
+  action(db, 'cage-quail', 'farm_cage_add', { animalType: 'Quail', blockName: 'Birds', cageName: 'Q1' });
+  const flock = action(db, 'flock-quail', 'quail_flock_add', { name: 'Breeders', date: '2026-09-01', ageWeeks: 8, quantity: 5, cageId: 'cage-quail' });
+  assert.equal(flock.initialAgeWeeks, 8);
+  action(db, 'eat-quail1', 'quail_eaten', { date: '2026-09-02', flockId: flock.id, quantity: 2 });
+  action(db, 'eat-quail1', 'quail_eaten', { date: '2026-09-02', flockId: flock.id, quantity: 2 });
+  assert.equal(db.flocks[0].quantity, 3);
+  assert.equal(db.cage_allocations[0].quantity, 3);
+  assert.equal(farmRecordViews(db).fowls_eaten[0].quantity, 2);
+  assert.ok(isProtectedFarmMutation(db, '/api/fowls-eaten/eat-quail1', 'DELETE'));
+  action(db, 'undo-quail', 'quail_eaten_void', { recordId: 'eat-quail1' });
+  assert.equal(db.flocks[0].quantity, 5);
+  assert.equal(db.cage_allocations[0].quantity, 5);
+  const before = structuredClone(db);
+  assert.throws(() => action(db, 'bad-eaten', 'quail_eaten', { date: '2026-09-02', flockId: flock.id, quantity: 6 }), /Not enough/);
+  assert.deepEqual(db, before);
+  assert.throws(() => action(db, 'bad-loss1', 'quail_loss', { date: '2026-02-30', flockId: flock.id, quantity: 1 }), /valid date/);
+  assert.deepEqual(db, before, 'A date failure after stock calculation cannot alter stock');
+});
+
+test('rabbit ages advance and adjustable readiness and birth reminders close correctly', () => {
+  const db = farm();
+  action(db, 'rabbit-doe', 'rabbit_add', { date: '2026-09-01', birthDate: '2026-04-01', sex: 'female', name: 'Molly', maturityAgeWeeks: 26 });
+  action(db, 'rabbit-buck', 'rabbit_add', { date: '2026-09-01', initialAgeWeeks: 20, sex: 'male' });
+  assert.equal(rabbitAgeDays(db.rabbits[0], '2026-09-30'), 182);
+  assert.equal(rabbitAgeDays(db.rabbits[0], '2026-10-01'), 183);
+  assert.equal(rabbitAgeDays(db.rabbits[1], '2026-09-08'), 147);
+  assert.match(rabbitAgeLabel(db.rabbits[1], '2026-09-08'), /estimated/);
+  assert.equal(rabbitAgeDays({ acquiredDate: '2026-09-01' }, '2026-10-01'), undefined);
+  assert.equal(rabbitReminders(db, '2026-09-29').length, 0);
+  assert.match(rabbitReminders(db, '2026-09-30')[0].title, /maturity review/);
+  action(db, 'review-doe', 'rabbit_maturity_ack', { rabbitId: 'rabbit-doe' });
+  assert.equal(rabbitReminders(db, '2026-10-01').length, 0);
+  action(db, 'breed-doe', 'rabbit_breeding', { date: '2026-10-01', doeId: 'rabbit-doe', buckId: 'rabbit-buck' });
+  assert.equal(db.rabbit_breedings[0].expectedDate, '2026-11-01');
+  assert.equal(rabbitReminders(db, '2026-10-28').length, 0);
+  assert.match(rabbitReminders(db, '2026-10-29')[0].title, /prepare the nest/);
+  assert.match(rabbitReminders(db, '2026-11-01')[0].title, /expected today/);
+  assert.match(rabbitReminders(db, '2026-11-02')[0].title, /overdue/);
+  action(db, 'birth-doe', 'rabbit_litter', { date: '2026-11-01', doeId: 'rabbit-doe', buckId: 'rabbit-buck', breedingId: 'breed-doe', quantity: 2 });
+  assert.equal(rabbitReminders(db, '2026-11-02').length, 0);
+  assert.throws(() => action(db, 'birth-again', 'rabbit_litter', { date: '2026-11-01', doeId: 'rabbit-doe', buckId: 'rabbit-buck', breedingId: 'breed-doe', quantity: 2 }), /already has a litter/);
+  action(db, 'breed-next', 'rabbit_breeding', { date: '2026-12-01', doeId: 'rabbit-doe', buckId: 'rabbit-buck', expectedDate: '2027-01-03' });
+  action(db, 'close-next', 'rabbit_breeding_close', { breedingId: 'breed-next' });
+  assert.equal(rabbitReminders(db, '2027-01-03').length, 0);
+  db.rabbits[0].status = 'sold';
+  assert.equal(rabbitReminders(db, '2027-01-03').length, 0);
+});
+
+test('system reminders use Android service-worker notifications and respect permission', async () => {
+  globalThis.window = { Notification: class {} };
+  globalThis.Notification = class { constructor() { throw new Error('Android must use service worker notifications'); } };
+  globalThis.Notification.permission = 'granted';
+  const notices = [];
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { serviceWorker: { getRegistration: async () => ({ showNotification: async (...args) => notices.push(args) }) } } });
+  const { notifyFarmReminder } = await import('../src/lib/farmNotifications.ts');
+  const reminder = { id: 'rabbit-birth-test', title: 'Prepare the nest', description: 'Due soon' };
+  assert.equal(await notifyFarmReminder(reminder), true);
+  assert.equal(notices[0][1].tag, reminder.id);
+  assert.equal(notices[0][1].data.section, 'rabbits');
+  Notification.permission = 'denied';
+  assert.equal(await notifyFarmReminder(reminder), false);
+  assert.equal(notices.length, 1);
+});
+
+test('tapping a rabbit system reminder opens rabbit records in the existing app window', async () => {
+  const handlers = new Map();
+  const visits = [];
+  const client = { url: 'https://farm.example/', navigate: async url => visits.push(url), focus: async () => visits.push('focus') };
+  const self = { location: { origin: 'https://farm.example' }, addEventListener: (name, handler) => handlers.set(name, handler), clients: { matchAll: async () => [client], openWindow: async () => assert.fail('Existing window should be reused') } };
+  runInNewContext(readFileSync('public/sw.js', 'utf8'), { self, URL });
+  let work;
+  let closed = false;
+  handlers.get('notificationclick')({ notification: { data: { section: 'rabbits' }, close: () => { closed = true; } }, waitUntil: promise => { work = promise; } });
+  await work;
+  assert.equal(closed, true);
+  assert.deepEqual(visits, ['https://farm.example/?farm=rabbits', 'focus']);
+});
