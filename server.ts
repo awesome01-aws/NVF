@@ -1875,21 +1875,41 @@ async function startServer() {
     const db = loadDb();
     if (!db.cages) db.cages = [...DEFAULT_CAGES];
     const target = decodeURIComponent(req.params.id).trim().toLowerCase();
-    const index = db.cages.findIndex((c: any) => 
+    let index = db.cages.findIndex((c: any) => 
       (c.id && String(c.id).trim().toLowerCase() === target) || 
       (c.cageName && String(c.cageName).trim().toLowerCase() === target)
     );
+    let cage = index === -1 ? undefined : db.cages[index];
+    // Rabbit housing is stored twice: a cage row and a hutch row (same id or hutch.cageId).
+    const hutches: any[] = db.rabbit_hutches || [];
+    const hutch = cage
+      ? hutches.find((h: any) => !h.archived && (h.id === cage.id || h.cageId === cage.id))
+      : hutches.find((h: any) => !h.archived && (String(h.id).trim().toLowerCase() === target || String(h.cageId || '').trim().toLowerCase() === target));
 
-    if (index === -1) {
+    if (!cage && !hutch) {
       return res.status(404).json({ error: "Cage not found in registry." });
     }
+    if (!cage && hutch?.cageId) {
+      index = db.cages.findIndex((c: any) => c.id === hutch.cageId);
+      cage = index === -1 ? undefined : db.cages[index];
+    }
 
-    const cage = db.cages[index];
-    if ((db.rabbit_hutches || []).some((h: any) => h.id === cage.id || h.cageId === cage.id)) return res.status(409).json({ error: 'This cage is linked to rabbit housing and must be kept with its history.' });
-    if ((db.cage_allocations || []).some((a: any) => a.cageName === cage.cageName && a.blockName === cage.blockName && a.quantity > 0)) return res.status(409).json({ error: 'Move the animals out before removing this cage.' });
-    db.cages.splice(index, 1);
+    if (hutch) {
+      const living = (db.rabbits || []).filter((r: any) => r.status === 'active' && r.hutchId === hutch.id).length;
+      if (living > 0) return res.status(409).json({ error: `Move the ${living} rabbit${living === 1 ? '' : 's'} out of ${hutch.name} before removing it.` });
+    }
+    if (cage && (db.cage_allocations || []).some((a: any) => a.cageName === cage.cageName && a.blockName === cage.blockName && a.quantity > 0)) return res.status(409).json({ error: 'Move the animals out before removing this cage.' });
+
+    if (hutch) {
+      const hasHistory = (db.rabbits || []).some((r: any) => r.hutchId === hutch.id) ||
+        (db.rabbit_moves || []).some((m: any) => m.toHutchId === hutch.id || m.fromHutchId === hutch.id);
+      // Keep a hutch that past records point to (hidden from choices); remove an unused one completely.
+      if (hasHistory) hutch.archived = true;
+      else db.rabbit_hutches = hutches.filter((h: any) => h !== hutch);
+    }
+    if (cage) db.cages.splice(index, 1);
     saveDb(db);
-    res.json({ success: true });
+    res.json({ success: true, archived: !!hutch?.archived });
   });
 
   // Live Cage Allocations (Live Cage Block Distribution Table)
@@ -2227,12 +2247,15 @@ function calculateCurrentAgeWeeks(
     const { id, date, brahmaEggs, turkeyEggs, recordedBy, notes } = req.body;
 
     const recDate = date || cameroonDate();
-    const bEggs = Math.max(0, Number(brahmaEggs) || 0);
-    const tEggs = Math.max(0, Number(turkeyEggs) || 0);
 
     const recId = id || crypto.randomUUID();
     const existingIdx = db.daily_egg_collections.findIndex((e: any) => e.id === recId || e.date === recDate);
-    if (req.body.expected !== undefined && (req.body.expected === null ? existingIdx !== -1 : !eggCountsMatch(db.daily_egg_collections[existingIdx], req.body.expected))) return res.status(409).json({ error: 'Another family member changed this day’s egg count. Refresh and review the latest numbers.' });
+    if (req.body.expected === null && existingIdx !== -1) return res.status(409).json({ error: `Eggs for ${recDate} are already recorded. Open that day in the egg list to change it.` });
+    if (req.body.expected !== undefined && req.body.expected !== null && !eggCountsMatch(db.daily_egg_collections[existingIdx], req.body.expected)) return res.status(409).json({ error: 'Another family member changed this day’s egg count. Refresh and review the latest numbers.' });
+    // A count that is not sent keeps the day's saved value (an import of one species must not erase the other).
+    const existingRow = existingIdx !== -1 ? db.daily_egg_collections[existingIdx] : undefined;
+    const bEggs = brahmaEggs !== undefined ? Math.max(0, Number(brahmaEggs) || 0) : Number(existingRow?.brahmaEggs) || 0;
+    const tEggs = turkeyEggs !== undefined ? Math.max(0, Number(turkeyEggs) || 0) : Number(existingRow?.turkeyEggs) || 0;
     const qEggs = req.body.quailEggs !== undefined
       ? Math.max(0, Number(req.body.quailEggs) || 0)
       : (existingIdx !== -1 ? Number(db.daily_egg_collections[existingIdx].quailEggs) || 0 : 0);
@@ -3106,6 +3129,12 @@ function calculateCurrentAgeWeeks(
     }
     if (type === 'incubator' && db.incubator_records.some((record: any) => record.ownerType === 'farm' && ids.includes(record.id))) return res.status(409).json({ error: 'Farm-owned quail batches cannot be deleted here.' });
     
+    if (type === 'flocks') {
+      // Same clean-up as deleting one flock: its cage rows and loss records go with it.
+      const names = new Set(db.flocks.filter((f: any) => ids.includes(f.id)).map((f: any) => String(f.name || '').trim().toLowerCase()));
+      db.mortality = (db.mortality || []).filter((m: any) => !ids.includes(m.flockId));
+      if (Array.isArray(db.cage_allocations)) db.cage_allocations = db.cage_allocations.filter((a: any) => !ids.some((id: string) => a.id === `flock-${id}`) && !(a.flockName && names.has(String(a.flockName).trim().toLowerCase())));
+    }
     db[key] = (db[key] as any[]).filter((r: any) => !ids.includes(r.id));
     saveDb(db);
     res.json({ success: true, count: ids.length });
