@@ -42,7 +42,39 @@ export function useFarmAction(token: string, refresh: () => void) {
       return false;
     } finally { saving.current = false; setBusy(false); }
   };
-  return { busy, message, error, run };
+  const clear = () => { setMessage(''); setError(''); };
+  return { busy, message, error, run, clear };
+}
+
+/** Delete a rabbit/quail cage or hutch with an in-app two-tap confirm (no window.confirm: Android WebViews may block it). */
+export function useHousingRemoval(token: string, refresh: () => void) {
+  const [confirmId, setConfirmId] = React.useState('');
+  const [busyId, setBusyId] = React.useState('');
+  const [message, setMessage] = React.useState('');
+  const [error, setError] = React.useState('');
+  const remove = async (id: string, name: string) => {
+    if (busyId) return;
+    if (confirmId !== id) { setConfirmId(id); setMessage(''); setError(''); return; }
+    setConfirmId(''); setBusyId(id); setMessage(''); setError('');
+    try {
+      const response = await fetch(`/api/cages/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { Authorization: token } });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Could not delete this cage or hutch.');
+      setMessage(body.archived ? `${name} removed. Its past records are kept.` : `${name} deleted.`);
+      refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not delete this cage or hutch.');
+    } finally { setBusyId(''); }
+  };
+  return { confirmId, busyId, message, error, remove, cancel: () => setConfirmId('') };
+}
+
+export function HousingDeleteButton({ id, name, removal }: { id: string; name: string; removal: ReturnType<typeof useHousingRemoval> }) {
+  const confirming = removal.confirmId === id;
+  return <span className="inline-flex shrink-0 items-center gap-1">
+    <button type="button" aria-label={confirming ? `Confirm delete ${name}` : `Delete ${name}`} disabled={!!removal.busyId} onClick={() => removal.remove(id, name)} className={`min-h-9 rounded-lg px-2 text-xs font-semibold ${confirming ? 'bg-rose-600 text-white' : 'border border-rose-200 text-rose-700'} disabled:opacity-50`}>{removal.busyId === id ? 'Deleting…' : confirming ? 'Tap to confirm' : 'Delete'}</button>
+    {confirming && <button type="button" onClick={removal.cancel} className="min-h-9 rounded-lg border border-slate-200 px-2 text-xs font-semibold text-slate-700">Cancel</button>}
+  </span>;
 }
 
 const rabbitTasks = [
@@ -55,7 +87,9 @@ const rabbitTasks = [
 export function RabbitSection({ data, token, refresh, initialTask }: { data: Data; token: string; refresh: () => void; initialTask?: string }) {
   const today = useFarmToday();
   const rabbits = data.rabbits || [];
-  const hutches = data.rabbit_hutches || [];
+  const allHutches = data.rabbit_hutches || [];
+  const hutches = allHutches.filter(item => !item.archived);
+  const housingRemoval = useHousingRemoval(token, refresh);
   const breedings = data.rabbit_breedings || [];
   const litters = data.rabbit_litters || [];
   const active = rabbits.filter(item => item.status === 'active');
@@ -127,12 +161,13 @@ export function RabbitSection({ data, token, refresh, initialTask }: { data: Dat
       {message && <p role="status" className="text-sm text-emerald-800">{message}</p>}{error && <p role="alert" className="text-sm text-rose-700">{error}</p>}
     </form>
     <div className="grid gap-3 sm:grid-cols-2">
-      <RecordGroup title="Individual rabbits" count={active.filter(item => !item.grouped).length}>{active.filter(item => !item.grouped).map(item => <p key={item.id} className="rounded-xl bg-slate-50 p-3"><strong>{item.name || item.id}</strong> · {item.sex} · {hutches.find(h => h.id === item.hutchId)?.name || 'No hutch'}<br/>{rabbitAgeLabel(item, today)}<br/><span className="text-xs">ID {item.id}{item.motherId ? ` · Mother ${nameOf(item.motherId)} · Father ${nameOf(item.fatherId)}` : ''}</span></p>)}</RecordGroup>
+      <RecordGroup title="Individual rabbits" count={active.filter(item => !item.grouped).length}>{active.filter(item => !item.grouped).map(item => <p key={item.id} className="rounded-xl bg-slate-50 p-3"><strong>{item.name || item.id}</strong> · {item.sex} · {allHutches.find(h => h.id === item.hutchId)?.name || 'No hutch'}<br/>{rabbitAgeLabel(item, today)}<br/><span className="text-xs">ID {item.id}{item.motherId ? ` · Mother ${nameOf(item.motherId)} · Father ${nameOf(item.fatherId)}` : ''}</span></p>)}</RecordGroup>
       <RecordGroup title="Rabbit reminders" count={rabbitReminders(data, today).length}>{rabbitReminders(data, today).map(item => <div key={item.id} className="rounded-xl bg-amber-50 p-3 space-y-2"><strong>{item.title}</strong><p>{item.description}</p><button type="button" className={smallButton} disabled={busy} onClick={() => run(item.breedingId ? 'rabbit_breeding_close' : 'rabbit_maturity_ack', item.breedingId ? { breedingId: item.breedingId } : { rabbitId: item.rabbitId })}>{item.breedingId ? 'Close breeding without a litter' : 'Mark readiness reviewed'}</button>{item.breedingId && <button type="button" className={smallButton} onClick={() => { const breeding = breedings.find(b => b.id === item.breedingId)!; setTask('rabbit_litter'); setF({ date: today, doeId: breeding.doeId, buckId: breeding.buckId, breedingId: breeding.id }); }}>Record litter</button>}</div>)}</RecordGroup>
       <RecordGroup title="Rabbits used at home" count={(data.rabbit_eaten || []).filter(item => !item.voided).length}>{(data.rabbit_eaten || []).filter(item => !item.voided).map(item => <div key={item.id} className="flex items-center justify-between gap-2"><span>{item.date} · {item.rabbitIds.length} used at home</span><button type="button" className={smallButton} disabled={busy} onClick={() => run('rabbit_eaten_void', { recordId: item.id })}>Reverse</button></div>)}</RecordGroup>
       <RecordGroup title="Litters and grouped bunnies" count={litters.length}>{litters.map(item => <p key={item.id} className="rounded-xl bg-slate-50 p-3"><strong>{item.birthDate} · {nameOf(item.doeId)} + {nameOf(item.buckId)}</strong><br/>{groupedIn(item).length} grouped · {item.kitIds.length} born · litter ID {item.id}</p>)}</RecordGroup>
       <RecordGroup title="Breeding" count={breedings.length}>{breedings.slice().reverse().map(item => <p key={item.id}>{item.date} · {nameOf(item.doeId)} + {nameOf(item.buckId)}{item.expectedDate ? ` · Expected ${item.expectedDate}` : ''}</p>)}</RecordGroup>
-      <RecordGroup title="Hutches and moves" count={hutches.length + (data.rabbit_moves || []).length}>{hutches.map(item => <p key={item.id}>{item.name}</p>)}{(data.rabbit_moves || []).slice().reverse().map(item => <p key={item.id}>{item.date} · {item.rabbitIds.length} moved to {hutches.find(h => h.id === item.toHutchId)?.name}</p>)}</RecordGroup>
+      <RecordGroup title="Hutches and moves" count={hutches.length + (data.rabbit_moves || []).length}>{hutches.map(item => <div key={item.id} className="flex items-center justify-between gap-2"><span className="min-w-0 break-words">{item.name} · {active.filter(r => r.hutchId === item.id).length} rabbits</span><HousingDeleteButton id={item.id} name={item.name} removal={housingRemoval} /></div>)}{(data.rabbit_moves || []).slice().reverse().map(item => <p key={item.id}>{item.date} · {item.rabbitIds.length} moved to {allHutches.find(h => h.id === item.toHutchId)?.name}</p>)}</RecordGroup>
+      {(housingRemoval.error || housingRemoval.message) && <div className="sm:col-span-2">{housingRemoval.error && <p role="alert" className="text-sm text-rose-700">{housingRemoval.error}</p>}{housingRemoval.message && <p role="status" className="text-sm text-emerald-800">{housingRemoval.message}</p>}</div>}
       <RecordGroup title="Health, weights and feed" count={(data.animal_care || []).filter(item => item.species === 'Rabbit').length}>{(data.animal_care || []).filter(item => item.species === 'Rabbit').slice().reverse().map(item => <p key={item.id}>{item.date} · {item.kind} · {nameOf(item.targetId)} {item.amount ? `· ${item.amount} ${item.unit}` : ''} {item.detail}</p>)}</RecordGroup>
       <RecordGroup title="Losses" count={(data.rabbit_losses || []).filter(item => !item.voided).length}>{(data.rabbit_losses || []).filter(item => !item.voided).slice().reverse().map(item => <div key={item.id} className="flex items-center justify-between gap-2"><span>{item.date} · {item.rabbitIds.length} lost · {item.cause || 'No cause recorded'}</span><button type="button" className={smallButton} disabled={busy} onClick={() => run('rabbit_loss_void', { lossId: item.id })}>Reverse</button></div>)}</RecordGroup>
       <RecordGroup title="Live-rabbit sales" count={(data.rabbit_sales || []).filter(item => !item.voided).length}>{(data.rabbit_sales || []).filter(item => !item.voided).slice().reverse().map(item => <div key={item.id} className="flex items-center justify-between gap-2"><span>{item.date} · {item.rabbitIds.length} to {item.buyerName} · {item.totalAmount.toLocaleString()} FCFA</span><button type="button" className={smallButton} disabled={busy} onClick={() => run('rabbit_sale_void', { saleId: item.id })}>Reverse</button></div>)}</RecordGroup>
