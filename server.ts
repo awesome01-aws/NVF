@@ -780,10 +780,38 @@ function saveDbLocalFileOnly(data: any) {
 
 class CloudConflictError extends Error {}
 
+// One-time seed: when the cloud document has never existed, upload the bundled
+// backup (data/db.json) exactly once. A marker document makes sure a later
+// deletion of app_data/main never re-uploads stale backup data.
+async function seedCloudOnce(): Promise<boolean> {
+  if (!firestoreDb || !cloudDocument) return false;
+  if (process.env.NVF_DISABLE_SEED === '1') return false;
+  const seedFile = process.env.NVF_SEED_FILE || DB_FILE;
+  if (!fs.existsSync(seedFile)) return false;
+  const marker = firestoreDb.doc('app_data/_seed_marker');
+  const seedData = JSON.parse(fs.readFileSync(seedFile, 'utf-8'));
+  delete seedData._revision;
+  const sanitized = JSON.parse(JSON.stringify(seedData));
+  if (Buffer.byteLength(JSON.stringify(sanitized), 'utf8') > 900_000) throw new Error('Seed file is too large for one Firestore document.');
+  const seeded = await firestoreDb.runTransaction(async transaction => {
+    const [markerSnap, mainSnap] = await Promise.all([transaction.get(marker), transaction.get(cloudDocument)]);
+    if (markerSnap.exists || mainSnap.exists) return false;
+    const now = new Date().toISOString();
+    transaction.set(cloudDocument, { ...sanitized, _updatedAt: sanitized._updatedAt || now, _revision: 0 });
+    transaction.set(marker, { seededAt: now, source: path.basename(seedFile) });
+    return true;
+  });
+  if (seeded) console.log(`Seeded app_data/main from ${seedFile}.`);
+  return seeded;
+}
+
 async function refreshFromCloud() {
   if (!cloudDocument) return;
   await cloudWriteQueue;
-  const snapshot = await cloudDocument.get();
+  let snapshot = await cloudDocument.get();
+  if ((!snapshot.exists || !snapshot.data()) && await seedCloudOnce()) {
+    snapshot = await cloudDocument.get();
+  }
   if (!snapshot.exists || !snapshot.data()) {
     throw new Error('The farm cloud database is missing. Check the Firebase project before continuing.');
   }
