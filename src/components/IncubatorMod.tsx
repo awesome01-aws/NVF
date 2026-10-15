@@ -988,6 +988,11 @@ export default function IncubatorMod({
   // Notification overlays
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  useEffect(() => {
+    if (!successMsg) return;
+    const timer = setTimeout(() => setSuccessMsg(''), 6000);
+    return () => clearTimeout(timer);
+  }, [successMsg]);
   const [loading, setLoading] = useState(false);
 
   // Quick form action mapping from Dashboard
@@ -2078,19 +2083,21 @@ export default function IncubatorMod({
         </button>
       </div>
 
-      {/* Global Module Alerts */}
+      {/* Global Module Alerts: fixed so a result is visible wherever the button was tapped */}
       {(errorMsg || successMsg) && (
-        <div className="px-1">
+        <div role="status" aria-live="polite" className="fixed inset-x-3 bottom-20 z-[60] mx-auto max-w-md space-y-2">
           {errorMsg && (
-            <div className="p-4 bg-rose-50 border border-rose-100 rounded-2xl text-rose-700 text-sm flex gap-2">
+            <div role="alert" className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-rose-700 text-sm flex gap-2 shadow-lg">
               <AlertCircle size={20} className="shrink-0" />
-              <p className="font-semibold">{errorMsg}</p>
+              <p className="font-semibold flex-1">{errorMsg}</p>
+              <button type="button" aria-label="Dismiss message" onClick={() => setErrorMsg('')} className="shrink-0 text-rose-500"><X size={16} /></button>
             </div>
           )}
-          {successMsg && (
-            <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-2xl text-emerald-700 text-sm flex gap-2">
+          {successMsg && !errorMsg && (
+            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-700 text-sm flex gap-2 shadow-lg">
               <Sparkles size={20} className="shrink-0" />
-              <p className="font-semibold">{successMsg}</p>
+              <p className="font-semibold flex-1">{successMsg}</p>
+              <button type="button" aria-label="Dismiss message" onClick={() => setSuccessMsg('')} className="shrink-0 text-emerald-600"><X size={16} /></button>
             </div>
           )}
         </div>
