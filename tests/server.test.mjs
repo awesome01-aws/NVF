@@ -300,3 +300,45 @@ test('one-time loopback account recovery keeps existing records and closes after
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('rabbit housing can be deleted, keeps history, and egg imports keep the other species', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'nvf-test-'));
+  const port = await freePort();
+  const base = `http://127.0.0.1:${port}`;
+  let server;
+  const call = async (method, path, body) => {
+    const response = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    return { status: response.status, body: await response.json() };
+  };
+  const action = (kind, payload) => call('POST', '/api/farm/actions', { id: crypto.randomUUID(), kind, payload });
+  try {
+    server = await startServer(port, dataDir, { NVF_OPEN_ACCESS: '1' });
+    const empty = (await action('farm_cage_add', { animalType: 'Rabbit', blockName: 'House', cageName: 'R1' })).body.result;
+    const removed = await call('DELETE', `/api/cages/${empty.id}`);
+    assert.equal(removed.status, 200);
+    let data = (await call('GET', '/api/data')).body;
+    assert.ok(!data.cages.some(c => c.id === empty.id) && !data.rabbit_hutches.some(h => h.id === empty.id));
+
+    const used = (await action('farm_cage_add', { animalType: 'Rabbit', blockName: 'House', cageName: 'R2' })).body.result;
+    const spare = (await action('farm_cage_add', { animalType: 'Rabbit', blockName: 'House', cageName: 'R3' })).body.result;
+    const doe = (await action('rabbit_add', { date: '2026-10-01', name: 'Doe', sex: 'female', hutchId: used.id })).body.result;
+    const occupied = await call('DELETE', `/api/cages/${used.id}`);
+    assert.equal(occupied.status, 409);
+    assert.match(occupied.body.error, /Move the 1 rabbit/);
+    assert.equal((await action('rabbit_move', { date: '2026-10-02', rabbitIds: [doe.id], toHutchId: spare.id })).status, 200);
+    const archived = await call('DELETE', `/api/cages/${used.id}`);
+    assert.equal(archived.status, 200);
+    assert.equal(archived.body.archived, true);
+    data = (await call('GET', '/api/data')).body;
+    assert.equal(data.rabbit_hutches.find(h => h.id === used.id).archived, true);
+    assert.equal((await action('rabbit_move', { date: '2026-10-03', rabbitIds: [doe.id], toHutchId: used.id })).status, 400);
+
+    assert.equal((await call('POST', '/api/daily_egg_collections', { date: '2026-10-01', brahmaEggs: 40, turkeyEggs: 0, quailEggs: 0, expected: null })).status, 200);
+    assert.equal((await call('POST', '/api/daily_egg_collections', { date: '2026-10-01', turkeyEggs: 5 })).status, 200);
+    const day = (await call('GET', '/api/data')).body.daily_egg_collections.find(r => r.date === '2026-10-01');
+    assert.deepEqual([day.brahmaEggs, day.turkeyEggs, day.totalEggs], [40, 5, 45]);
+  } finally {
+    server?.kill();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
