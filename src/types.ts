@@ -204,7 +204,7 @@ export interface RabbitAnimal {
   notes?: string;
 }
 
-export interface RabbitHutch { id: string; name: string; cageId?: string; notes?: string }
+export interface RabbitHutch { id: string; name: string; cageId?: string; notes?: string; archived?: boolean }
 export interface RabbitBreeding { id: string; date: string; doeId: string; buckId: string; expectedDate?: string; closed?: boolean; notes?: string }
 export interface RabbitLitter { id: string; birthDate: string; doeId: string; buckId: string; breedingId?: string; kitIds: string[]; notes?: string }
 export interface RabbitMove { id: string; date: string; rabbitIds: string[]; fromHutchId?: string; toHutchId: string; notes?: string }
