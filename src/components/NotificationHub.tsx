@@ -197,6 +197,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
           </div>
           <button 
             type="button"
+            aria-label="Close reminders"
             onClick={onClose}
             className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer transition-colors"
           >
