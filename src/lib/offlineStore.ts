@@ -28,6 +28,7 @@ export interface DbData {
   animal_care?: AnimalCareRecord[];
   quail_egg_use?: QuailEggUse[];
   daily_egg_collections?: DailyEggCollection[];
+  fowls_eaten?: import('../types').FowlEatenRecord[];
 }
 
 export interface QueuedMutation {
@@ -636,6 +637,7 @@ export function executeLocalMutation(
         else if (type === 'sales') db.poultry_sales = db.poultry_sales.filter(r => !ids.includes(r.id));
         else if (type === 'mortality') db.mortality = db.mortality.filter(r => !ids.includes(r.id));
         else if (type === 'expenses') db.expenses = db.expenses.filter(r => !ids.includes(r.id));
+        else if (type === 'fowls_eaten') db.fowls_eaten = (db.fowls_eaten || []).filter(r => !ids.includes(r.id));
         description = `Bulk Delete: ${ids.length} ${type} records`;
       }
     } else if (endpoint === '/api/bulk-update' && method === 'POST') {
@@ -648,6 +650,7 @@ export function executeLocalMutation(
         else if (type === 'sales') key = 'poultry_sales';
         else if (type === 'mortality') key = 'mortality';
         else if (type === 'expenses') key = 'expenses';
+        else if (type === 'fowls_eaten') key = 'fowls_eaten';
 
         if (key && key in db) {
           (db as any)[key] = ((db as any)[key] || []).map((r: any) => {
