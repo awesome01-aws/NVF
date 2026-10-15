@@ -615,9 +615,13 @@ export default function PoultryMod({
       if (res.ok) {
         setSuccessMsg(`Flock cage location updated to ${newCage}!`);
         triggerRefresh();
+      } else {
+        const resData = await res.json().catch(() => ({}));
+        setErrorMsg(resData.error || 'Could not change the flock cage.');
       }
     } catch (err) {
       console.error('Failed to update flock cage:', err);
+      setErrorMsg('Could not change the flock cage.');
     }
   };
 
@@ -952,7 +956,7 @@ export default function PoultryMod({
             method: 'DELETE',
             headers: { Authorization: `Bearer ${token}` }
           });
-          if (!res.ok) throw new Error('Failed to delete egg collection log.');
+          if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed to delete egg collection log.');
           setSuccessMsg('Egg collection log deleted successfully.');
           triggerRefresh();
         } catch (err: any) {
@@ -1186,10 +1190,15 @@ export default function PoultryMod({
 
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  useEffect(() => {
+    if (!successMsg) return;
+    const timer = setTimeout(() => setSuccessMsg(''), 6000);
+    return () => clearTimeout(timer);
+  }, [successMsg]);
   const [loading, setLoading] = useState(false);
 
   // Common submission utility
-  const submitRecord = async (endpoint: string, payload: any) => {
+  const submitRecord = async (endpoint: string, payload: any): Promise<boolean> => {
     setErrorMsg('');
     setSuccessMsg('');
     setLoading(true);
@@ -1203,23 +1212,25 @@ export default function PoultryMod({
         },
         body: JSON.stringify(payload)
       });
-      const resData = await res.json();
+      const resData = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(resData.error || 'Failed to submit operation record.');
       }
-      setSuccessMsg('Record added successfully!');
+      setSuccessMsg(res.status === 202 ? 'Saved on this phone. It will sync when connected.' : 'Record added successfully!');
       triggerRefresh();
       // Collapse table
       setActiveFormSection(null);
+      return true;
     } catch (err: any) {
       setErrorMsg(err.message || 'Server error. Please review fields.');
+      return false;
     } finally {
       setLoading(false);
     }
   };
 
   // Handlers
-  const handleAddFlock = (e: React.FormEvent) => {
+  const handleAddFlock = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!flockName) {
       setErrorMsg('Please specify a flock batch name.');
@@ -1261,7 +1272,7 @@ export default function PoultryMod({
     }
 
     const finalBreed = flockSpecies === 'Turkey' ? turkeyType : (flockBreed || 'Brahma');
-    submitRecord('/api/flocks', {
+    if (!await submitRecord('/api/flocks', {
       name: flockName,
       breed: finalBreed,
       quantity: finalQty,
@@ -1273,7 +1284,7 @@ export default function PoultryMod({
       hensCount,
       speciesBreakdown,
       notes: flockNotes
-    });
+    })) return;
 
     // Reset Form
     setFlockName('');
@@ -1498,11 +1509,11 @@ export default function PoultryMod({
             method: 'DELETE',
             headers: { 'Authorization': token }
           });
+          const resData = await res.json().catch(() => ({}));
           if (res.ok) {
-            setSuccessMsg(`Cage '${cageName}' deleted successfully.`);
+            setSuccessMsg(resData.archived ? `Cage '${cageName}' removed. Its past rabbit records are kept.` : `Cage '${cageName}' deleted successfully.`);
             triggerRefresh();
           } else {
-            const resData = await res.json();
             setErrorMsg(resData.error || 'Failed to delete registered cage.');
           }
         } catch (err: any) {
@@ -1691,7 +1702,7 @@ export default function PoultryMod({
     );
   };
 
-  const handleAddFeed = (e: React.FormEvent) => {
+  const handleAddFeed = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!feedBags || !feedCostBag || !feedRemaining) {
       setErrorMsg('Please complete all required fields.');
@@ -1701,7 +1712,7 @@ export default function PoultryMod({
       setErrorMsg('Feed amounts, weights, costs, and stock numbers cannot be negative or invalid.');
       return;
     }
-    submitRecord('/api/feed', {
+    if (!await submitRecord('/api/feed', {
       date: feedDate,
       feedType: feedType,
       species: feedSpecies,
@@ -1709,7 +1720,7 @@ export default function PoultryMod({
       weightPerBag: Number(feedWeight),
       costBag: Number(feedCostBag),
       stockRemaining: Number(feedRemaining)
-    });
+    })) return;
     clearFeedDraft();
     setFeedBags('');
     setFeedCostBag('');
@@ -1743,7 +1754,7 @@ export default function PoultryMod({
           : { date: saleDate, flockId: saleFlockId, quantity: Number(saleQty), amount, buyerName: saleBuyer, isChick: saleItem === 'Quail Chick', useKind: 'sold', notes: saleNotes };
         if (!await farmAction.run(kind, payload)) return;
       } catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Choose available stock.'); return; }
-    } else submitRecord('/api/sales', {
+    } else if (!await submitRecord('/api/sales', {
       date: saleDate,
       itemType: saleItem,
       quantity: Number(saleQty),
@@ -1752,7 +1763,7 @@ export default function PoultryMod({
       flockId: saleFlockId,
       ageWeeks: saleAgeWeeks,
       notes: saleNotes
-    });
+    })) return;
     clearSaleDraft();
     setSaleQty('');
     setSalePrice('');
@@ -1777,19 +1788,19 @@ export default function PoultryMod({
         const rabbit = !isQuailFlock(mortFlockId);
         if (!await farmAction.run(rabbit ? 'rabbit_loss' : 'quail_loss', { date: mortDate, ...(rabbit ? { rabbitIds: selectedRabbitIds(rawData, mortFlockId, Number(mortQty)) } : { flockId: mortFlockId, quantity: Number(mortQty) }), cause: mortCause })) return;
       } catch (error) { setErrorMsg(error instanceof Error ? error.message : 'Choose available stock.'); return; }
-    } else submitRecord('/api/mortality', {
+    } else if (!await submitRecord('/api/mortality', {
       date: mortDate,
       flockId: mortFlockId,
       quantity: Number(mortQty),
       cause: mortCause
-    });
+    })) return;
     clearMortDraft();
     setMortFlockId('');
     setMortQty('');
     setMortCause('');
   };
 
-  const handleAddExpense = (e: React.FormEvent) => {
+  const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!expDesc || !expAmount) {
       setErrorMsg('Describe expense category and enter bill.');
@@ -1799,12 +1810,12 @@ export default function PoultryMod({
       setErrorMsg('Expense bill amount cannot be negative.');
       return;
     }
-    submitRecord('/api/expenses', {
+    if (!await submitRecord('/api/expenses', {
       date: expDate,
       category: expCat,
       description: expDesc,
       amount: Number(expAmount)
-    });
+    })) return;
     clearExpDraft();
     setExpDesc('');
     setExpAmount('');
@@ -1847,13 +1858,13 @@ export default function PoultryMod({
       return;
     }
 
-    submitRecord('/api/fowls-eaten', {
+    if (!await submitRecord('/api/fowls-eaten', {
       date: eatenDate,
       flockId: eatenFlockId,
       quantity: qtyNum,
       ageWeeks: eatenAgeWeeks ? Number(eatenAgeWeeks) : selectedFlock.ageWeeks,
       notes: eatenNotes
-    });
+    })) return;
 
     clearEatenDraft();
     setEatenFlockId('');
@@ -2143,26 +2154,27 @@ export default function PoultryMod({
   return (
     <div id="poultry_tab" className="space-y-8 pb-32">
 
-      {/* Common Alerts Display */}
-      {(errorMsg || successMsg) && (
-        <div className="px-1">
-          {errorMsg && (
-            <div className="p-4 bg-rose-50 border border-rose-100 rounded-2xl text-rose-700 text-sm flex gap-2">
+      {/* Common Alerts Display: fixed so a result is visible wherever the button was tapped */}
+      {(errorMsg || successMsg || farmAction.error) && (
+        <div role="status" aria-live="polite" className="fixed inset-x-3 bottom-20 z-[60] mx-auto max-w-md space-y-2">
+          {(errorMsg || farmAction.error) && (
+            <div role="alert" className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-rose-700 text-sm flex gap-2 shadow-lg">
               <AlertCircle size={20} className="shrink-0" />
-              <p className="font-semibold">{errorMsg}</p>
+              <p className="font-semibold flex-1">{errorMsg || farmAction.error}</p>
+              <button type="button" aria-label="Dismiss message" onClick={() => { setErrorMsg(''); farmAction.clear(); }} className="shrink-0 text-rose-500"><X size={16} /></button>
             </div>
           )}
-          {successMsg && (
-            <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-2xl text-emerald-700 text-sm flex gap-2">
-              <Package size={20} className="shrink-0 animate-bounce" />
-              <p className="font-semibold">{successMsg}</p>
+          {successMsg && !errorMsg && (
+            <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-emerald-700 text-sm flex gap-2 shadow-lg">
+              <Package size={20} className="shrink-0" />
+              <p className="font-semibold flex-1">{successMsg}</p>
+              <button type="button" aria-label="Dismiss message" onClick={() => setSuccessMsg('')} className="shrink-0 text-emerald-600"><X size={16} /></button>
             </div>
           )}
         </div>
       )}
 
       <div className="px-1"><h1 className="text-2xl font-bold tracking-tight text-emerald-950">Farm records</h1><p className="text-sm text-slate-600">Choose what you want to manage today.</p></div>
-      {farmAction.error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-rose-700">{farmAction.error}</p>}
       {farmAction.message && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-emerald-800">{farmAction.message}</p>}
       <label className="block sm:hidden text-sm font-semibold text-emerald-950">Farm section
         <select aria-label="Farm section" value={farmSubSection} onChange={event => setFarmSubSection(event.target.value as typeof farmSubSection)} className="mt-2 h-13 w-full rounded-2xl border border-emerald-200 bg-white px-4 text-base text-emerald-950">
