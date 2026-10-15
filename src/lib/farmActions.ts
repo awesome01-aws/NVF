@@ -74,6 +74,7 @@ function activeRabbits(db: FarmDb, value: unknown): RabbitAnimal[] {
 }
 function validateHutch(db: FarmDb, value: unknown): string {
   const id = text(value, 'Hutch');
+  if (db.rabbit_hutches!.some(item => item.id === id && item.archived)) fail('This hutch was removed. Choose a current hutch.');
   if (!db.rabbit_hutches!.some(item => item.id === id)) {
     const cage = db.cages?.find(item => item.id === id && item.animalType === 'Rabbit');
     if (!cage) fail('Choose a saved rabbit cage or hutch.');
@@ -227,7 +228,7 @@ function performFarmAction(db: FarmDb, action: FarmAction, p: Record<string, unk
       const existing = db.rabbit_hutches!.find(item => item.id === id);
       if (existing) return existing;
       const name = text(p.name, 'Hutch name');
-      if (db.rabbit_hutches!.some(item => item.name.toLowerCase() === name.toLowerCase())) fail('This hutch already exists.');
+      if (db.rabbit_hutches!.some(item => !item.archived && item.name.toLowerCase() === name.toLowerCase())) fail('This hutch already exists.');
       const hutch = { id, name, cageId: id, notes: text(p.notes, 'Notes', false) };
       db.rabbit_hutches!.push(hutch);
       (db.cages ||= []).push({ id, blockName: 'Rabbits', cageName: name, animalType: 'Rabbit' });
