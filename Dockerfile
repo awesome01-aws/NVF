@@ -7,4 +7,4 @@ RUN npm run build
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000
-CMD ["sh", "-c", "cp /secrets/firebase-applet-config.json /app/ && node dist/server.cjs"]
+CMD ["node", "dist/server.cjs"]
