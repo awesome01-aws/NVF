@@ -663,6 +663,29 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
 
     try {
       let importedCount = 0;
+      let failedCount = 0;
+      let firstError = '';
+      // Every row is sent to a real server route; a rejected row is counted, never reported as imported.
+      const post = async (url: string, body: any): Promise<boolean> => {
+        try {
+          const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': token }, body: JSON.stringify(body) });
+          if (res.ok) return true;
+          const data = await res.json().catch(() => ({}));
+          if (!firstError) firstError = data.error || `Server rejected a row (${res.status}).`;
+        } catch {
+          if (!firstError) firstError = 'Could not reach the farm server.';
+        }
+        return false;
+      };
+      // Losses and home use must point at a real flock (the server needs its id to update stock).
+      const snapshot = await fetch('/api/data', { headers: { 'Authorization': token } }).then(r => r.ok ? r.json() : null).catch(() => null);
+      const knownFlocks: Array<{ id: string; name: string }> = snapshot?.flocks || [];
+      const flockIdFor = (name: string) => knownFlocks.find(f => f.name.trim().toLowerCase() === String(name || '').trim().toLowerCase())?.id;
+      const noFlock = (name: string) => { if (!firstError) firstError = `No flock named "${name}" exists; losses and home use need a matching flock name.`; return false; };
+      const eggCounts = (speciesText: string, quantity: number) => {
+        const sp = String(speciesText || '').toLowerCase();
+        return sp.includes('turkey') ? { turkeyEggs: quantity } : sp.includes('quail') ? { quailEggs: quantity } : { brahmaEggs: quantity };
+      };
       
       // Map row arrays to backend field objects based on target category
       for (const row of parsedRows) {
@@ -684,92 +707,61 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
           const rowDate = getDateCell(1);
           const species = selectedSheet === 'Turkeys' ? 'Turkey' : 'Chicken';
 
-          // 1. Egg Collection
+          const outcomes: boolean[] = [];
+          // 1. Egg Collection (only this species' count; the other species on that day is kept)
           const eggsColl = Number(getCell(2));
           if (eggsColl > 0) {
-            await fetch('/api/daily_egg_collections', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': token },
-              body: JSON.stringify({
-                date: rowDate,
-                species: species,
-                quantity: eggsColl,
-                quality: 'Good',
-                notes: `Imported from ${selectedSheet} sheet`
-              })
-            });
+            outcomes.push(await post('/api/daily_egg_collections', {
+              date: rowDate,
+              ...eggCounts(species, eggsColl),
+              notes: `Imported from ${selectedSheet} sheet`
+            }));
           }
 
           // 2. Feed Record
           const feedBags = Number(getCell(9));
           const feedAmt = Number(getCell(10));
           if (feedBags > 0 || feedAmt > 0) {
-            await fetch('/api/feed-records', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': token },
-              body: JSON.stringify({
-                date: rowDate,
-                flockName: `${species} Flock`,
-                feedType: 'Grower / Layer Mash',
-                bagsCount: feedBags || 1,
-                totalCost: feedAmt || 0,
-                notes: `Imported from ${selectedSheet} sheet`
-              })
-            });
+            const bags = feedBags || 1;
+            outcomes.push(await post('/api/feed', {
+              date: rowDate,
+              feedType: 'Grower / Layer Mash',
+              species: 'Poultry',
+              bagsBought: bags,
+              weightPerBag: 50,
+              costBag: (feedAmt || 0) / bags,
+              stockRemaining: 0
+            }));
           }
 
           // 3. Birds Sales
           const birdsSold = Number(getCell(18));
           const birdsAmt = Number(getCell(19));
           if (birdsSold > 0 || birdsAmt > 0) {
-            await fetch('/api/poultry-sales', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': token },
-              body: JSON.stringify({
-                date: rowDate,
-                clientName: 'Imported Customer',
-                itemType: 'Bird',
-                quantity: birdsSold || 1,
-                totalAmount: birdsAmt || 0,
-                amountPaid: birdsAmt || 0,
-                paymentStatus: 'Paid',
-                notes: `Imported from ${selectedSheet} sheet (${species})`
-              })
-            });
+            const qty = birdsSold || 1;
+            outcomes.push(await post('/api/sales', {
+              date: rowDate,
+              buyerName: 'Imported Customer',
+              itemType: 'Live Bird',
+              quantity: qty,
+              unitPrice: (birdsAmt || 0) / qty,
+              notes: `Imported from ${selectedSheet} sheet (${species})`
+            }));
           }
 
-          // 4. Fowls Eaten
+          // 4. Fowls Eaten / 5. Mortality need a real flock; the sheet has no flock name.
           const eatenQty = Number(getCell(23));
-          if (eatenQty > 0) {
-            await fetch('/api/fowls-eaten', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': token },
-              body: JSON.stringify({
-                date: rowDate,
-                flockName: `${species} Flock`,
-                quantity: eatenQty,
-                notes: `House Consumption (Imported from ${selectedSheet})`
-              })
-            });
-          }
-
-          // 5. Mortality
           const mortalityQty = Number(getCell(24));
+          const sheetFlockId = flockIdFor(`${species} Flock`);
+          if (eatenQty > 0) {
+            outcomes.push(sheetFlockId ? await post('/api/fowls-eaten', { date: rowDate, flockId: sheetFlockId, quantity: eatenQty, notes: `House Consumption (Imported from ${selectedSheet})` }) : noFlock(`${species} Flock`));
+          }
           if (mortalityQty > 0) {
-            await fetch('/api/mortality', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': token },
-              body: JSON.stringify({
-                date: rowDate,
-                flockName: `${species} Flock`,
-                quantity: mortalityQty,
-                cause: 'Recorded in Excel log',
-                notes: `Imported from ${selectedSheet} sheet`
-              })
-            });
+            outcomes.push(sheetFlockId ? await post('/api/mortality', { date: rowDate, flockId: sheetFlockId, quantity: mortalityQty, cause: 'Recorded in Excel log' }) : noFlock(`${species} Flock`));
           }
 
-          importedCount++;
+          if (outcomes.length && outcomes.every(Boolean)) importedCount++;
+          else if (outcomes.some(ok => !ok)) failedCount++;
           continue;
         }
 
@@ -814,6 +806,7 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
             })
           });
           if (res.ok) importedCount++;
+          else { failedCount++; if (!firstError) firstError = (await res.json().catch(() => ({}))).error || 'A client row was rejected.'; }
           continue;
         } else if (targetCategory === 'flocks' || selectedSheet.toLowerCase().includes('stock')) {
           const parsedFlocks = parseStockRow(row, headers);
@@ -830,20 +823,16 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
               }
             }
 
-            await fetch('/api/flocks', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': token },
-              body: JSON.stringify({
-                name: item.name,
-                species: item.species,
-                breed: item.breed,
-                quantity: item.quantity,
-                ageWeeks: item.ageWeeks,
-                dateAdded: item.dateAdded,
-                notes: item.notes
-              })
+            const saved = await post('/api/flocks', {
+              name: item.name,
+              species: item.species,
+              breed: item.breed,
+              quantity: item.quantity,
+              ageWeeks: item.ageWeeks,
+              dateAdded: item.dateAdded,
+              notes: item.notes
             });
-            importedCount++;
+            if (saved) importedCount++; else failedCount++;
           }
           continue;
         } else if (targetCategory === 'incubator') {
@@ -912,7 +901,7 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
           });
           if (res.ok) {
             importedCount++;
-          }
+          } else { failedCount++; if (!firstError) firstError = (await res.json().catch(() => ({}))).error || 'An incubator row was rejected.'; }
           continue;
         } else if (targetCategory === 'feed') {
           const hDate = findColIndex(['date', 'log date']);
@@ -924,16 +913,18 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
           const hSupplier = findColIndex(['supplier', 'vendor', 'source']);
           const hNotes = findColIndex(['notes', 'comment', 'remark']);
 
-          endpoint = '/api/feed-records';
+          endpoint = '/api/feed';
+          const bags = (hBags !== -1 ? Number(getCell(hBags).replace(/[^0-9]/g, '')) : Number(getCell(3))) || 1;
+          const totalCost = (hCost !== -1 ? Number(getCell(hCost).replace(/[^0-9\.]/g, '')) : Number(getCell(5))) || 0;
+          void hFlock; void hSupplier; void hNotes;
           payload = {
             date: hDate !== -1 ? getDateCell(hDate) : getDateCell(0),
-            flockName: (hFlock !== -1 ? getCell(hFlock) : getCell(1)) || 'General Flock',
             feedType: (hType !== -1 ? getCell(hType) : getCell(2)) || 'Grower Mash',
-            bagsCount: (hBags !== -1 ? Number(getCell(hBags).replace(/[^0-9]/g, '')) : Number(getCell(3))) || 1,
-            kgPerBag: (hKg !== -1 ? Number(getCell(hKg).replace(/[^0-9\.]/g, '')) : Number(getCell(4))) || 50,
-            totalCost: (hCost !== -1 ? Number(getCell(hCost).replace(/[^0-9\.]/g, '')) : Number(getCell(5))) || 0,
-            supplier: (hSupplier !== -1 ? getCell(hSupplier) : getCell(6)) || '',
-            notes: (hNotes !== -1 ? getCell(hNotes) : getCell(7)) || 'Imported from Excel'
+            species: 'Poultry',
+            bagsBought: bags,
+            weightPerBag: (hKg !== -1 ? Number(getCell(hKg).replace(/[^0-9\.]/g, '')) : Number(getCell(4))) || 50,
+            costBag: totalCost / bags,
+            stockRemaining: 0
           };
         } else if (targetCategory === 'sales') {
           const hDate = findColIndex(['date', 'sale date']);
@@ -946,20 +937,18 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
           const hStatus = findColIndex(['status', 'payment status']);
           const hNotes = findColIndex(['notes', 'comment']);
 
-          endpoint = '/api/poultry-sales';
+          endpoint = '/api/sales';
           const qtyVal = hQty !== -1 ? Number(getCell(hQty).replace(/[^0-9]/g, '')) : Number(getCell(3)) || 1;
           const unitVal = hUnit !== -1 ? Number(getCell(hUnit).replace(/[^0-9\.]/g, '')) : Number(getCell(4)) || 0;
           const totalVal = hTotal !== -1 ? Number(getCell(hTotal).replace(/[^0-9\.]/g, '')) : Number(getCell(5)) || (qtyVal * unitVal);
 
+          void hPaid; void hStatus;
           payload = {
             date: hDate !== -1 ? getDateCell(hDate) : getDateCell(0),
-            clientName: (hClient !== -1 ? getCell(hClient) : getCell(1)) || 'Walk-in Customer',
-            itemType: (hItem !== -1 ? getCell(hItem) : getCell(2)) || 'Bird',
-            quantity: qtyVal,
-            unitPrice: unitVal,
-            totalAmount: totalVal,
-            amountPaid: (hPaid !== -1 ? Number(getCell(hPaid).replace(/[^0-9\.]/g, '')) : Number(getCell(6))) || totalVal,
-            paymentStatus: (hStatus !== -1 ? getCell(hStatus) : getCell(7)) || 'Paid',
+            buyerName: (hClient !== -1 ? getCell(hClient) : getCell(1)) || 'Walk-in Customer',
+            itemType: (hItem !== -1 ? getCell(hItem) : getCell(2)) || 'Live Bird',
+            quantity: qtyVal || 1,
+            unitPrice: unitVal || (qtyVal ? totalVal / qtyVal : totalVal),
             notes: (hNotes !== -1 ? getCell(hNotes) : getCell(8)) || 'Imported from Excel'
           };
         } else if (targetCategory === 'mortality') {
@@ -969,13 +958,16 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
           const hCause = findColIndex(['cause', 'reason', 'disease']);
           const hNotes = findColIndex(['notes', 'comment']);
 
+          const flockName = (hFlock !== -1 ? getCell(hFlock) : getCell(1)) || 'Flock';
+          const flockId = flockIdFor(flockName);
+          void hNotes;
+          if (!flockId) { noFlock(flockName); failedCount++; continue; }
           endpoint = '/api/mortality';
           payload = {
             date: hDate !== -1 ? getDateCell(hDate) : getDateCell(0),
-            flockName: (hFlock !== -1 ? getCell(hFlock) : getCell(1)) || 'Flock',
+            flockId,
             quantity: (hQty !== -1 ? Number(getCell(hQty).replace(/[^0-9]/g, '')) : Number(getCell(2))) || 1,
-            cause: (hCause !== -1 ? getCell(hCause) : getCell(3)) || 'Recorded in Excel log',
-            notes: (hNotes !== -1 ? getCell(hNotes) : getCell(4)) || 'Imported from Excel'
+            cause: (hCause !== -1 ? getCell(hCause) : getCell(3)) || 'Recorded in Excel log'
           };
         } else if (targetCategory === 'expenses') {
           const hDate = findColIndex(['date', 'expense date']);
@@ -1002,11 +994,10 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
           const hNotes = findColIndex(['notes', 'comment']);
 
           endpoint = '/api/daily_egg_collections';
+          void hQual;
           payload = {
             date: hDate !== -1 ? getDateCell(hDate) : getDateCell(0),
-            species: (hSpecies !== -1 ? getCell(hSpecies) : getCell(1)) || 'Chicken',
-            quantity: (hQty !== -1 ? Number(getCell(hQty).replace(/[^0-9]/g, '')) : Number(getCell(2))) || 1,
-            quality: (hQual !== -1 ? getCell(hQual) : getCell(3)) || 'Good',
+            ...eggCounts((hSpecies !== -1 ? getCell(hSpecies) : getCell(1)) || 'Chicken', (hQty !== -1 ? Number(getCell(hQty).replace(/[^0-9]/g, '')) : Number(getCell(2))) || 0),
             notes: (hNotes !== -1 ? getCell(hNotes) : getCell(4)) || 'Imported from Excel'
           };
         } else if (targetCategory === 'fowls_eaten') {
@@ -1016,10 +1007,13 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
           const hAge = findColIndex(['age', 'weeks']);
           const hNotes = findColIndex(['notes', 'comment', 'reason']);
 
+          const eatenFlockName = (hFlock !== -1 ? getCell(hFlock) : getCell(1)) || 'Flock';
+          const eatenFlockId = flockIdFor(eatenFlockName);
+          if (!eatenFlockId) { noFlock(eatenFlockName); failedCount++; continue; }
           endpoint = '/api/fowls-eaten';
           payload = {
             date: hDate !== -1 ? getDateCell(hDate) : getDateCell(0),
-            flockName: (hFlock !== -1 ? getCell(hFlock) : getCell(1)) || 'Flock',
+            flockId: eatenFlockId,
             quantity: (hQty !== -1 ? Number(getCell(hQty).replace(/[^0-9]/g, '')) : Number(getCell(2))) || 1,
             ageWeeks: (hAge !== -1 ? Number(getCell(hAge).replace(/[^0-9]/g, '')) : Number(getCell(3))) || 12,
             notes: (hNotes !== -1 ? getCell(hNotes) : getCell(4)) || 'House Consumption (Imported)'
@@ -1027,23 +1021,14 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
         }
 
         if (endpoint) {
-          const res = await fetch(endpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': token
-            },
-            body: JSON.stringify(payload)
-          });
-          if (res.ok) {
-            importedCount++;
-          }
+          if (await post(endpoint, payload)) importedCount++;
+          else failedCount++;
         }
       }
 
       setImportStatus({
-        success: true,
-        message: `Successfully imported ${importedCount} out of ${parsedRows.length} rows into ${targetCategory.toUpperCase()}!`
+        success: failedCount === 0 && importedCount > 0,
+        message: `Imported ${importedCount} out of ${parsedRows.length} rows into ${targetCategory.toUpperCase()}.` + (failedCount ? ` ${failedCount} row(s) were not saved. First problem: ${firstError}` : '')
       });
       triggerRefresh();
     } catch (err: any) {
@@ -1076,6 +1061,8 @@ export default function ExcelImportModal({ isOpen, onClose, token, triggerRefres
             </div>
           </div>
           <button
+            type="button"
+            aria-label="Close import"
             onClick={onClose}
             className="p-2 text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-full cursor-pointer transition-colors"
           >
