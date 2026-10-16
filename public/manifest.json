@@ -1,6 +1,12 @@
 {
-  "short_name": "NewVersionFarms",
+  "id": "/",
+  "short_name": "NV Farms",
   "name": "New Vision Farms | Family Farm",
+  "description": "Manage New Vision Farms: eggs, incubator batches, clients, flocks, rabbits and quail, with reminders.",
+  "categories": [
+    "business",
+    "productivity"
+  ],
   "start_url": "/",
   "display": "standalone",
   "background_color": "#064e3b",

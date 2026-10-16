@@ -3735,6 +3735,13 @@ function calculateCurrentAgeWeeks(
     });
   });
 
+  // Android app link (PWABuilder/TWA). express.static skips dot-folders, so serve it explicitly.
+  app.get("/.well-known/assetlinks.json", (_req, res) => {
+    const file = [path.join(process.cwd(), "dist", ".well-known", "assetlinks.json"), path.join(process.cwd(), "public", ".well-known", "assetlinks.json")].find(f => fs.existsSync(f));
+    if (!file) return res.status(404).json([]);
+    res.type("application/json").sendFile(file);
+  });
+
   // Serve static UI assets & public folder for Service Worker & Manifest
   if (process.env.NODE_ENV !== "production") {
     const publicPath = path.join(process.cwd(), "public");
