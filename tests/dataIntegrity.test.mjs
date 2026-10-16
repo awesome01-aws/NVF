@@ -99,3 +99,34 @@ test('flock delete: 404 with a plain message when nothing matched; bulk delete r
     assert.equal(replay.body.code, 'ALREADY_DELETED');
   });
 });
+
+test('cage delete uses the unique ID; a name alone is accepted only when exactly one cage has it', async () => {
+  await farm(async ({ call, action, data }) => {
+    const north = await action('farm_cage_add', { animalType: 'Poultry', blockName: 'NORTH', cageName: 'TWIN' });
+    const south = await action('farm_cage_add', { animalType: 'Poultry', blockName: 'SOUTH', cageName: 'TWIN' });
+    // Birds live in the NORTH twin only.
+    await call('POST', '/api/cage_allocations', { blockName: 'NORTH', cageName: 'TWIN', flockName: 'North birds', quantity: 4 });
+
+    // Name only, two cages have it: refused, nothing deleted.
+    const ambiguous = await call('DELETE', '/api/cages/twin');
+    assert.equal(ambiguous.status, 409);
+    assert.equal(ambiguous.body.code, 'AMBIGUOUS_CAGE_NAME');
+    assert.match(ambiguous.body.error, /More than one cage is called 'TWIN'/);
+    let cages = (await data()).cages;
+    assert.ok(cages.some(c => c.id === north.id) && cages.some(c => c.id === south.id));
+
+    // By ID: the empty SOUTH twin is removed; the occupied NORTH twin is untouched.
+    assert.equal((await call('DELETE', `/api/cages/${south.id}`)).status, 200);
+    cages = (await data()).cages;
+    assert.ok(cages.some(c => c.id === north.id) && !cages.some(c => c.id === south.id));
+    // The occupied one is still protected when deleted by ID.
+    assert.equal((await call('DELETE', `/api/cages/${north.id}`)).status, 409);
+
+    // Name only, exactly one cage has it now: accepted (backward compatible), still with the same rules.
+    assert.equal((await call('DELETE', '/api/cages/TWIN')).status, 409, 'occupied cage still refused');
+    const lone = await action('farm_cage_add', { animalType: 'Poultry', blockName: 'EAST', cageName: 'SOLO' });
+    assert.equal((await call('DELETE', '/api/cages/solo')).status, 200);
+    assert.ok(!(await data()).cages.some(c => c.id === lone.id));
+    assert.equal((await call('DELETE', '/api/cages/solo')).status, 404);
+  });
+});

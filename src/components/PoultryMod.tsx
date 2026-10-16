@@ -2970,6 +2970,8 @@ export default function PoultryMod({
 
                     <button
                       type="button"
+                      // Send the cage's unique ID: two blocks may each have a cage with this name.
+                      // (The name is only a fallback for an old cage with no ID; the server refuses it if it is not unique.)
                       onClick={() => handleDeleteCage(cage.id || cage.cageName, cage.cageName)}
                       className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer shrink-0"
                       title={`Delete registered cage '${cage.cageName}'`}

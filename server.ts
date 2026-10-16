@@ -1949,11 +1949,23 @@ async function startServer() {
   app.delete("/api/cages/:id", requireAuth, (req, res) => {
     const db = loadDb();
     if (!db.cages) db.cages = [...DEFAULT_CAGES];
-    const target = decodeURIComponent(req.params.id).trim().toLowerCase();
-    let index = db.cages.findIndex((c: any) => 
-      (c.id && String(c.id).trim().toLowerCase() === target) || 
-      (c.cageName && String(c.cageName).trim().toLowerCase() === target)
-    );
+    const raw = decodeURIComponent(req.params.id).trim();
+    const target = raw.toLowerCase();
+    // 1. The cage's unique ID (what current screens send). Exact match first, then ignoring case as before.
+    let index = db.cages.findIndex((c: any) => c.id && String(c.id).trim() === raw);
+    if (index === -1) index = db.cages.findIndex((c: any) => c.id && String(c.id).trim().toLowerCase() === target);
+    // 2. Older screens / queued changes may send only the cage NAME. Two blocks can each have a cage
+    //    with the same name, so a name is accepted only when exactly one cage has it; never guess.
+    if (index === -1) {
+      const sameName = db.cages
+        .map((c: any, i: number) => ({ c, i }))
+        .filter(({ c }: any) => c.cageName && String(c.cageName).trim().toLowerCase() === target);
+      if (sameName.length > 1) {
+        const blocks = sameName.map(({ c }: any) => c.blockName || 'no block').join(', ');
+        return res.status(409).json({ error: `More than one cage is called '${sameName[0].c.cageName}' (in ${blocks}). Nothing was deleted. Refresh the app and delete the cage again from its block.`, code: 'AMBIGUOUS_CAGE_NAME' });
+      }
+      if (sameName.length === 1) index = sameName[0].i;
+    }
     let cage = index === -1 ? undefined : db.cages[index];
     // Rabbit housing is stored twice: a cage row and a hutch row (same id or hutch.cageId).
     const hutches: any[] = db.rabbit_hutches || [];
