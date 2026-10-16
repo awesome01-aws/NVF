@@ -94,6 +94,7 @@ export default function HomeDashboard({ db, currentUserName, setActiveTab, onTri
 
   const primaryActions = [
     { label: 'Record eggs', help: "Enter today's egg count", icon: Egg, tab: 'farm' as ActiveTab, key: 'egg_collection' },
+    { label: 'Crossed a rabbit', help: 'Record mating and get birth reminders', icon: Rabbit, tab: 'farm' as ActiveTab, key: 'rabbit_breeding' },
     { label: 'Record a sale', help: 'Birds, meat or eggs sold', icon: ShoppingBag, tab: 'farm' as ActiveTab, key: 'sales' },
     { label: 'Add a flock', help: 'New birds on the farm', icon: Bird, tab: 'farm' as ActiveTab, key: 'flock' },
     { label: 'Add an egg batch', help: 'Start incubation for a client', icon: Plus, tab: 'incubator' as ActiveTab, key: 'batch' },

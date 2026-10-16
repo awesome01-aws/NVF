@@ -302,8 +302,8 @@ export default function PoultryMod({
 
   React.useEffect(() => {
     if (quickFormKey) {
-      if (quickFormKey === 'rabbit_add' || quickFormKey === 'rabbits') {
-        setActiveFormSection('rabbit_add');
+      if (quickFormKey === 'rabbit_add' || quickFormKey === 'rabbits' || quickFormKey === 'rabbit_breeding') {
+        setActiveFormSection(quickFormKey === 'rabbit_breeding' ? 'rabbit_breeding' : 'rabbit_add');
         setFarmSubSection('rabbits');
       } else if (quickFormKey === 'quail' || quickFormKey === 'quail_eggs') {
         setFarmSubSection('quail');
@@ -2361,7 +2361,7 @@ export default function PoultryMod({
         </div>
       </div>
 
-      <div hidden={farmSubSection !== 'all' && farmSubSection !== 'rabbits'}><RabbitSection key={rabbitShortcutVersion} data={rawData} token={token} refresh={triggerRefresh} initialTask={activeFormSection === 'rabbit_add' ? 'rabbit_add' : undefined} /></div>
+      <div hidden={farmSubSection !== 'all' && farmSubSection !== 'rabbits'}><RabbitSection key={rabbitShortcutVersion} data={rawData} token={token} refresh={triggerRefresh} initialTask={activeFormSection === 'rabbit_add' || activeFormSection === 'rabbit_breeding' ? activeFormSection : undefined} /></div>
       <div hidden={farmSubSection !== 'all' && farmSubSection !== 'quail'}><QuailSection key={quailShortcutVersion} data={rawData} token={token} refresh={triggerRefresh} initialTask={activeFormSection === 'quail_flock_add' ? 'quail_flock_add' : undefined} /></div>
 
       {/* SECTION 1: FLOCKS */}

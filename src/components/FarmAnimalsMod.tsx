@@ -78,7 +78,7 @@ export function HousingDeleteButton({ id, name, removal }: { id: string; name: s
 }
 
 const rabbitTasks = [
-  ['rabbit_add', 'Add a rabbit'], ['rabbit_update', 'Edit a rabbit'], ['rabbit_hutch', 'Add a hutch'], ['rabbit_breeding', 'Record breeding'],
+  ['rabbit_add', 'Add a rabbit'], ['rabbit_update', 'Edit a rabbit'], ['rabbit_hutch', 'Add a hutch'], ['rabbit_breeding', 'Crossed a rabbit (breeding)'],
   ['rabbit_litter', 'Record a litter'], ['rabbit_individualize', 'Name or separate a bunny'], ['rabbit_move', 'Move rabbits'],
   ['rabbit_care', 'Health, weight or feed'], ['rabbit_loss', 'Record a loss'], ['rabbit_sale', 'Sell live rabbits'], ['rabbit_eaten', 'Record rabbits used at home'],
   ['animal_expense', 'Record a rabbit cost']
