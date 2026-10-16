@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Bell, BellOff, X, Phone, MessageSquare, ArrowRight, CheckCircle2, ShieldAlert, Egg } from 'lucide-react';
 import { IncubatorRecord, DailyEggCollection, DbSchema } from '../types';
-import { rabbitReminders } from '../lib/farmViews';
-import { notifyFarmReminder } from '../lib/farmNotifications';
+import { farmReminders, incubationDays, type ActiveNotification } from '../lib/farmReminders';
 import { useFarmToday } from '../lib/useFarmToday';
 import { getCameroonTodayISO, formatDateDDMMYYYY } from '../utils/dateUtils';
 
@@ -18,18 +17,7 @@ interface NotificationHubProps {
   onClose: () => void;
 }
 
-export interface ActiveNotification {
-  id: string;
-  type: 'day18' | 'day21' | 'eggCollection' | 'rabbit';
-  title: string;
-  description: string;
-  clientName?: string;
-  clientMark?: string;
-  clientPhone?: string;
-  eggsCollected?: number;
-  expectedDate?: string;
-  record?: IncubatorRecord;
-}
+export type { ActiveNotification };
 
 export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollection, onOpenRabbits, isOpen, onClose }: NotificationHubProps) {
   const [permission, setPermission] = useState<NotificationPermission>(
@@ -37,95 +25,12 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
   );
   
   // Track notifications already alerted via Web Notification API to prevent spam
-  const sentWebNotificationsRef = useRef<Set<string>>(new Set());
 
   // Derive notifications list in real-time
   const todayStr = useFarmToday();
-  const todayTime = new Date(todayStr).getTime();
 
-  const getActiveNotifications = (): ActiveNotification[] => {
-    const list: ActiveNotification[] = rabbitReminders(db, todayStr).map(item => ({ ...item, type: 'rabbit' }));
-    
-    // 1. Check 6:00 PM Daily Egg Collection Alert
-    const now = new Date();
-    const currentHour = Number(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hourCycle: 'h23', timeZone: 'Africa/Douala' }).format(now));
-    const hasEggRecordToday = (db.daily_egg_collections || []).some((rec) => rec.date === todayStr && rec.poultryRecorded !== false);
-
-    if (currentHour >= 18 && !hasEggRecordToday) {
-      list.push({
-        id: `egg-alert-${todayStr}`,
-        type: 'eggCollection',
-        title: '🥚 6:00 PM Daily Egg Collection Alert!',
-        description: `Daily farm egg collection for today (${formatDateDDMMYYYY(todayStr)}) has not been logged yet. Please enter Brahma & Turkey egg counts.`,
-        expectedDate: todayStr
-      });
-    }
-
-    if (!db.incubator_records) return list;
-
-    db.incubator_records.forEach((rec) => {
-      if (rec.ownerType === 'farm') return;
-      const broughtTime = new Date(rec.dateBrought).getTime();
-      const daysDiff = Math.floor((todayTime - broughtTime) / (24 * 60 * 60 * 1000));
-      const species = rec.eggType || 'Brahma';
-
-      let candleDay = 8;
-      let transferDay = 18;
-      let hatchDay = 21;
-
-      if (species === 'Turkey') {
-        candleDay = 10;
-        transferDay = 25;
-        hatchDay = 28;
-      } else if (species === 'Quail') {
-        candleDay = -1; // No candling
-        transferDay = 15;
-        hatchDay = 18;
-      } else if (species === 'Goose') {
-        candleDay = 10;
-        transferDay = 26;
-        hatchDay = 30;
-      }
-
-      // Day X Hatcher Transfer Notification:
-      // For Quail: scan is not required to trigger transfer. For others: scan is checked.
-      const hasScan = species === 'Quail' || (rec.eggsAfterScan !== null && rec.eggsAfterScan !== undefined);
-      if (hasScan && daysDiff >= transferDay && daysDiff < hatchDay && (rec.chicksHatched === null || rec.chicksHatched === undefined)) {
-        list.push({
-          id: `day18-${rec.id}`,
-          type: 'day18',
-          title: `${species} Day ${transferDay}: Send to Hatcher`,
-          description: `${rec.clientName} (${rec.clientMark}) • ${rec.eggsAfterScan !== null ? rec.eggsAfterScan : rec.eggsCollected} / ${rec.eggsCollected} eggs must be transferred from incubator to hatcher trays.`,
-          clientName: rec.clientName,
-          clientMark: rec.clientMark,
-          clientPhone: rec.clientPhone,
-          eggsCollected: rec.eggsCollected,
-          expectedDate: rec.day18Date,
-          record: rec
-        });
-      }
-
-      // Day Y Hatched & Call Client Notification:
-      if (daysDiff >= hatchDay && (rec.chicksHatched === null || rec.chicksHatched === undefined)) {
-        list.push({
-          id: `day21-${rec.id}`,
-          type: 'day21',
-          title: `${species} Day ${hatchDay}: Hatch Complete!`,
-          description: `${rec.clientName} (${rec.clientMark}) • Day ${hatchDay} cycle complete for ${rec.eggsCollected} eggs. Count hatched chicks, and call client immediately.`,
-          clientName: rec.clientName,
-          clientMark: rec.clientMark,
-          clientPhone: rec.clientPhone,
-          eggsCollected: rec.eggsCollected,
-          expectedDate: rec.day21Date,
-          record: rec
-        });
-      }
-    });
-
-    return list;
-  };
-
-  const activeReminders = getActiveNotifications();
+  // Same list the bell badge and phone notifications use (see lib/farmReminders).
+  const activeReminders = farmReminders(db, todayStr);
 
   // Handle requesting browser Notification Permissions
   const requestNotificationPermission = async () => {
@@ -138,24 +43,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
     }
   };
 
-  // Run alert trigger to send native/system push notifications
-  useEffect(() => {
-    if (permission === 'granted' && activeReminders.length > 0) {
-      activeReminders.forEach((reminder) => {
-        // Only trigger once per session/ID to avoid nagging the user
-        if (!sentWebNotificationsRef.current.has(reminder.id)) {
-          sentWebNotificationsRef.current.add(reminder.id);
-          try {
-            const key = `nvf_notice_${reminder.id}`;
-            if (reminder.type === 'rabbit' && localStorage.getItem(key)) return;
-            void notifyFarmReminder(reminder).then(sent => { if (sent && reminder.type === 'rabbit') localStorage.setItem(key, 'sent'); }).catch(() => {});
-          } catch (err) {
-            console.error('Failed to trigger web notification:', err);
-          }
-        }
-      });
-    }
-  }, [activeReminders, permission]);
+  // Phone notifications are now sent app-wide from App.tsx, so they work without opening this list.
 
   // WhatsApp client message generator
   const sendWhatsAppReminder = (reminder: ActiveNotification) => {
@@ -165,11 +53,15 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
     const transDay = species === 'Turkey' ? 25 : species === 'Quail' ? 15 : species === 'Goose' ? 26 : 18;
     const hatchDay = species === 'Turkey' ? 28 : species === 'Quail' ? 18 : species === 'Goose' ? 30 : 21;
     
+    const dateBrought = formatDateDDMMYYYY(reminder.record.dateBrought);
+    const candleDay = incubationDays(species).candle;
     let text = '';
     if (reminder.type === 'day21') {
-      text = `Hello ${reminder.clientName}, this is New Vision Farms (${species} Hatchery). This is a friendly update that your egg batch (Mark: ${reminder.clientMark}) brought on ${reminder.record.dateBrought} has reached Day ${hatchDay} (Hatched!). Please coordinate with us to collect your chicks. Thank you!`;
+      text = `Hello ${reminder.clientName}, this is New Vision Farms (${species} Hatchery). Your egg batch (Mark: ${reminder.clientMark}) brought on ${dateBrought} has reached Day ${hatchDay} and is due to hatch. We will confirm the number of chicks hatched and let you know when to collect them. Thank you!`;
+    } else if (reminder.type === 'candling') {
+      text = `Hello ${reminder.clientName}, this is New Vision Farms (${species} Hatchery). Your egg batch (Mark: ${reminder.clientMark}) brought on ${dateBrought} has reached Day ${candleDay}. We are candling (checking) the eggs and will update you on how many are developing well.`;
     } else {
-      text = `Hello ${reminder.clientName}, this is New Vision Farms (${species} Hatchery). Just keeping you updated that your egg batch (Mark: ${reminder.clientMark}) brought on ${reminder.record.dateBrought} has entered Day ${transDay} (Transfer phase). We are moving your eggs safely to our hatching trays!`;
+      text = `Hello ${reminder.clientName}, this is New Vision Farms (${species} Hatchery). Your egg batch (Mark: ${reminder.clientMark}) brought on ${dateBrought} has reached Day ${transDay}. We are moving your eggs safely to our hatching trays.`;
     }
 
     const url = `https://wa.me/${finalPhone}?text=${encodeURIComponent(text)}`;
@@ -287,6 +179,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
                 }
 
                 const isDay21 = reminder.type === 'day21';
+                const isCandling = reminder.type === 'candling';
                 const species = reminder.record?.eggType || 'Brahma';
                 const transDay = species === 'Turkey' ? 25 : species === 'Quail' ? 15 : species === 'Goose' ? 26 : 18;
                 const hatchDay = species === 'Turkey' ? 28 : species === 'Quail' ? 18 : species === 'Goose' ? 30 : 21;
@@ -305,7 +198,7 @@ export default function NotificationHub({ db, onOpenEditRecord, onOpenEggCollect
                         <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-wide ${
                           isDay21 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
                         }`}>
-                          {isDay21 ? `🐣 ${species} Day ${hatchDay} Hatch / Call` : `🥚 ${species} Day ${transDay} Hatcher Move`}
+                          {isDay21 ? `🐣 ${species} Day ${hatchDay} Hatch / Call` : isCandling ? `🔦 ${species} Day ${incubationDays(species).candle} Candling` : `🥚 ${species} Day ${transDay} Hatcher Move`}
                         </span>
                         <h4 className="text-sm font-black text-slate-800 leading-tight mt-1">{reminder.title}</h4>
                       </div>

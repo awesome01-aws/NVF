@@ -3,7 +3,6 @@ import { ArrowRight, ArrowRightLeft, Bird, Egg, HeartPulse, Package, Receipt, Sh
 import { ActiveTab, DailyEggCollection, Expense, FeedRecord, Flock, IncubatorRecord, PoultrySale, RabbitSale, DbSchema } from '../types';
 import { rabbitReminders } from '../lib/farmViews';
 import { useFarmToday } from '../lib/useFarmToday';
-import { useFarmNotifications } from '../lib/farmNotifications';
 import { getCameroonTodayISO } from '../utils/dateUtils';
 import { recordShortcutUsage } from '../utils/shortcutTracker';
 
@@ -33,7 +32,7 @@ interface HatcheryTask {
 export default function HomeDashboard({ db, currentUserName, setActiveTab, onTriggerQuickForm, onOpenEditRecord }: Props) {
   const today = useFarmToday();
   const rabbitTasks = rabbitReminders(db, today);
-  useFarmNotifications(rabbitTasks);
+  // Phone notifications for these are sent from App (useFarmNotifications), not here.
   const todayTime = Date.parse(`${today}T00:00:00Z`);
   const [dismissedTasks, setDismissedTasks] = React.useState<string[]>([]);
   const [eggReminderDismissed, setEggReminderDismissed] = React.useState(false);

@@ -12,7 +12,8 @@ const PoultryMod = React.lazy(() => import('./components/PoultryMod'));
 const IncubatorMod = React.lazy(() => import('./components/IncubatorMod'));
 const ReportsMod = React.lazy(() => import('./components/ReportsMod'));
 import { RefreshCw, Sparkles } from 'lucide-react';
-import { rabbitReminders } from './lib/farmViews';
+import { farmReminders } from './lib/farmReminders';
+import { useFarmNotifications } from './lib/farmNotifications';
 import { useFarmToday } from './lib/useFarmToday';
 const NotificationHub = React.lazy(() => import('./components/NotificationHub'));
 const ExcelImportModal = React.lazy(() => import('./components/ExcelImportModal'));
@@ -82,45 +83,19 @@ export default function App() {
 
   // Derive unread/active notifications count for Day 18, Day 21, and 6 PM Egg Collection
   const todayStr = useFarmToday();
-  const todayTime = new Date(todayStr).getTime();
-  const currentHour = Number(new Intl.DateTimeFormat('en-GB', { hour: '2-digit', hourCycle: 'h23', timeZone: 'Africa/Douala' }).format(new Date()));
-  const hasEggRecordToday = (db.daily_egg_collections || []).some(rec => rec.date === todayStr && rec.poultryRecorded !== false);
-
-  const incubatorRemindersCount = db.incubator_records?.reduce((acc, rec) => {
-    if (rec.ownerType === 'farm') return acc;
-    const broughtTime = new Date(rec.dateBrought).getTime();
-    const daysDiff = Math.floor((todayTime - broughtTime) / (24 * 60 * 60 * 1000));
-    const species = rec.eggType || 'Brahma';
-
-    let transferDay = 18;
-    let hatchDay = 21;
-
-    if (species === 'Turkey') {
-      transferDay = 25;
-      hatchDay = 28;
-    } else if (species === 'Quail') {
-      transferDay = 15;
-      hatchDay = 18;
-    } else if (species === 'Goose') {
-      transferDay = 26;
-      hatchDay = 30;
-    }
-    
-    const hasDay18Alert = daysDiff >= transferDay && daysDiff < hatchDay && (rec.chicksHatched === null || rec.chicksHatched === undefined);
-    const hasDay21Alert = daysDiff >= hatchDay && (rec.chicksHatched === null || rec.chicksHatched === undefined);
-    
-    if (hasDay18Alert || hasDay21Alert) {
-      return acc + 1;
-    }
-    return acc;
-  }, 0) || 0;
-
-  const activeRemindersCount = incubatorRemindersCount + rabbitReminders(db, todayStr).length + (currentHour >= 18 && !hasEggRecordToday ? 1 : 0);
+  // One shared reminder list: the bell badge, the bell list and phone notifications all use it.
+  const appReminders = farmReminders(db, todayStr);
+  useFarmNotifications(appReminders);
+  const activeRemindersCount = appReminders.length;
 
   // Quick Action Form forwarders (enables triggering collapsible toggles from Dashboard)
   const [quickFormKey, setQuickFormKey] = useState<string | null>(null);
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get('farm') === 'rabbits') { setActiveTab('farm'); setQuickFormKey('rabbits'); }
+    // Opened from a phone notification: go to the matching screen.
+    const params = new URLSearchParams(window.location.search);
+    const farm = params.get('farm');
+    if (farm === 'rabbits' || farm === 'egg_collection') { setActiveTab('farm'); setQuickFormKey(farm); }
+    else if (params.get('tab') === 'incubator') setActiveTab('incubator');
   }, []);
 
   // Sync / Refresh main DB state with ETag caching

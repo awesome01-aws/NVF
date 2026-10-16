@@ -24,9 +24,11 @@ self.addEventListener('activate', event => {
 
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-  if (event.notification.data?.section !== 'rabbits') return;
+  // Open the screen the reminder belongs to.
+  const section = event.notification.data?.section;
+  const path = section === 'rabbits' ? '/?farm=rabbits' : section === 'incubator' ? '/?tab=incubator' : section === 'eggs' ? '/?farm=egg_collection' : '/';
   event.waitUntil((async () => {
-    const target = new URL('/?farm=rabbits', self.location.origin).href;
+    const target = new URL(path, self.location.origin).href;
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     const existing = windows.find(client => new URL(client.url).origin === self.location.origin);
     if (existing) { await existing.navigate(target); await existing.focus(); }
