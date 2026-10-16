@@ -7,6 +7,7 @@ import { Client, IncubatorRecord, Flock, FeedRecord, PoultrySale, Mortality, Exp
 import { getCameroonTodayISO } from '../utils/dateUtils';
 import { apiUrl } from './apiOrigin';
 import { applyFarmAction, isProtectedFarmMutation, quailEggBalance } from './farmActions';
+import { ALREADY_DELETED_CODE } from './syncSafety';
 
 export interface DbData {
   users?: any[];
@@ -769,6 +770,7 @@ let syncInProgress = false;
 /**
  * Send queued changes in order.
  * - A change the server refuses (4xx) is marked 'failed' with the server's message and the next change is sent.
+ * - A delete answered 404 ALREADY_DELETED is counted as done (the record is already gone).
  * - A possible duplicate (409 POSSIBLE_DUPLICATE) waits for "Keep both" or "Discard"; the next change is sent.
  * - A change that refers to a record whose create did not save is 'held' instead of being sent.
  * - No connection, a server error, or a cloud conflict stops here and keeps the order for the next try.
@@ -827,6 +829,13 @@ export async function syncPendingQueue(token: string): Promise<{ success: boolea
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         const message = typeof body.error === 'string' ? body.error : `Server rejected a change (${response.status}).`;
+        // A delete of something that is already gone (e.g. another phone deleted it first) is done, not refused.
+        // Only the explicit ALREADY_DELETED code counts; any other 404 is still shown to the person.
+        if (response.status === 404 && body?.code === ALREADY_DELETED_CODE) {
+          saveSyncQueue(getSyncQueue().filter(queued => queued.id !== item.id));
+          synced++;
+          continue;
+        }
         if (response.status === 409 && body?.code === 'POSSIBLE_DUPLICATE') {
           updateQueuedItem(item.id, { status: 'duplicate', error: message, duplicateOf: { by: body.duplicate?.by, summary: body.duplicate?.summary } });
           continue;

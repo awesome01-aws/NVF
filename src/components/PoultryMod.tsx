@@ -1895,8 +1895,9 @@ export default function PoultryMod({
             setSuccessMsg('Record deleted successfully.');
             triggerRefresh();
           } else {
-            const error = await res.json();
+            const error = await res.json().catch(() => ({}));
             setErrorMsg(error.error || 'Failed to remove record.');
+            if (res.status === 404) triggerRefresh(); // e.g. already deleted on another phone: refresh the list
           }
         } catch (e: any) {
           setErrorMsg('Error deleting record.');
@@ -1956,9 +1957,14 @@ export default function PoultryMod({
             else if (type === 'expenses') setSelectedExpenseIds([]);
             else if (type === 'fowls_eaten') setSelectedEatenIds([]);
 
-            setSuccessMsg(`Successfully deleted ${resData.count || ids.length} records.`);
+            // Flocks: the server says how many it deleted and which were already gone.
+            const missing = Array.isArray(resData.notFoundIds) ? resData.notFoundIds.length : 0;
+            setSuccessMsg(missing
+              ? `Deleted ${resData.deletedCount} flock${resData.deletedCount === 1 ? '' : 's'}. ${missing} ${missing === 1 ? 'was' : 'were'} not found (maybe already deleted).`
+              : `Successfully deleted ${resData.count || ids.length} records.`);
             triggerRefresh();
           } else {
+            if (res.status === 404) triggerRefresh(); // the list on screen is out of date
             throw new Error(resData.error || 'Failed to execute bulk delete.');
           }
         } catch (err: any) {

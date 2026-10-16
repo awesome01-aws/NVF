@@ -13,7 +13,7 @@ import XLSX from "xlsx";
 import { initializeApp, applicationDefault } from "firebase-admin/app";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
 import { applyFarmAction, ensureFarmArrays, quailEggBalance, isProtectedFarmMutation } from './src/lib/farmActions';
-import { REQUEST_ID_HEADER, DEVICE_ID_HEADER, FORCE_DUPLICATE_HEADER, POSSIBLE_DUPLICATE_CODE, isValidClientId, hasRequestReceipt, addRequestReceipt, addRecentCreates, duplicateRuleFor, findPossibleDuplicate } from './src/lib/syncSafety';
+import { REQUEST_ID_HEADER, DEVICE_ID_HEADER, FORCE_DUPLICATE_HEADER, POSSIBLE_DUPLICATE_CODE, ALREADY_DELETED_CODE, isValidClientId, hasRequestReceipt, addRequestReceipt, addRecentCreates, duplicateRuleFor, findPossibleDuplicate } from './src/lib/syncSafety';
 
 function cameroonDate(date: Date = new Date()): string {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Douala', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).map(part => [part.type, part.value]));
@@ -147,6 +147,44 @@ function findBlockNameForCage(cageName: string, cagesList: any[]): string {
   const def = DEFAULT_CAGES.find((c) => c.cageName.toLowerCase().replace(/\s+/g, "") === norm);
   if (def) return def.blockName;
   return "CUSTOM BLOCK";
+}
+
+// --- Shared flock rules (used by the main routes AND the older duplicate routes) ---
+const FLOCK_NOT_FOUND_MESSAGE = 'That flock was not found. It may already have been deleted.';
+
+/** A cage row belongs to a flock when it carries the flock's id (`flock-<id>`) or the flock's name. */
+function isFlockCageRow(alloc: any, flock: any): boolean {
+  return alloc.id === `flock-${flock.id}` ||
+    !!(alloc.flockName && flock.name && String(alloc.flockName).trim().toLowerCase() === String(flock.name).trim().toLowerCase());
+}
+
+/** Keep the flock's cage rows showing the flock's live count (same rule the sale / loss routes use). */
+function syncFlockCageRows(db: any, flock: any): void {
+  if (!flock || !Array.isArray(db.cage_allocations)) return;
+  db.cage_allocations.forEach((alloc: any) => {
+    if (isFlockCageRow(alloc, flock)) alloc.quantity = flock.quantity;
+  });
+}
+
+/**
+ * Delete flocks by id with the same clean-up everywhere: their loss records and their cage rows go too.
+ * Returns which ids were deleted and which were not found, so callers can say so honestly.
+ */
+function deleteFlocksById(db: any, rawIds: unknown[]): { deletedIds: string[]; notFoundIds: string[] } {
+  const ids = [...new Set(rawIds.map(id => String(id)))];
+  const doomed = (db.flocks || []).filter((f: any) => ids.includes(f.id));
+  const deletedIds = doomed.map((f: any) => f.id);
+  const notFoundIds = ids.filter(id => !deletedIds.includes(id));
+  if (!doomed.length) return { deletedIds, notFoundIds };
+  const names = new Set(doomed.map((f: any) => String(f.name || '').trim().toLowerCase()).filter(Boolean));
+  db.flocks = db.flocks.filter((f: any) => !deletedIds.includes(f.id));
+  db.mortality = (db.mortality || []).filter((m: any) => !deletedIds.includes(m.flockId));
+  if (Array.isArray(db.cage_allocations)) {
+    db.cage_allocations = db.cage_allocations.filter((a: any) =>
+      !deletedIds.some((id: string) => a.id === `flock-${id}`) &&
+      !(a.flockName && names.has(String(a.flockName).trim().toLowerCase())));
+  }
+  return { deletedIds, notFoundIds };
 }
 
 function parseExcelFlocksAndAllocations() {
@@ -1457,20 +1495,11 @@ async function startServer() {
   app.delete("/api/flocks/:id", requireAuth, (req, res) => {
     const db = loadDb();
     const { id } = req.params;
-    const flockToDelete = db.flocks.find((f: any) => f.id === id);
-    const targetName = flockToDelete?.name?.trim().toLowerCase();
-
-    db.flocks = db.flocks.filter((f: any) => f.id !== id);
-    db.mortality = db.mortality.filter((m: any) => m.flockId !== id); // Cascade delete references
-
-    // Also remove or clean up cage allocation for deleted flock
-    if (Array.isArray(db.cage_allocations)) {
-      db.cage_allocations = db.cage_allocations.filter((a: any) => {
-        if (a.id === `flock-${id}`) return false;
-        if (targetName && a.flockName && a.flockName.trim().toLowerCase() === targetName) return false;
-        return true;
-      });
-    }
+    // Removes the flock, its loss records and its cage rows (shared with the bulk and older routes).
+    const { deletedIds } = deleteFlocksById(db, [id]);
+    // Nothing matched: say so instead of reporting success. ALREADY_DELETED lets a queued
+    // offline delete count as done (the flock is gone either way) without saving anything.
+    if (!deletedIds.length) return res.status(404).json({ error: FLOCK_NOT_FOUND_MESSAGE, code: ALREADY_DELETED_CODE });
 
     saveDb(db);
     res.json({ success: true });
@@ -3177,9 +3206,13 @@ function calculateCurrentAgeWeeks(
     
     if (type === 'flocks') {
       // Same clean-up as deleting one flock: its cage rows and loss records go with it.
-      const names = new Set(db.flocks.filter((f: any) => ids.includes(f.id)).map((f: any) => String(f.name || '').trim().toLowerCase()));
-      db.mortality = (db.mortality || []).filter((m: any) => !ids.includes(m.flockId));
-      if (Array.isArray(db.cage_allocations)) db.cage_allocations = db.cage_allocations.filter((a: any) => !ids.some((id: string) => a.id === `flock-${id}`) && !(a.flockName && names.has(String(a.flockName).trim().toLowerCase())));
+      // Deletes the flocks that exist and reports the ids that were not found.
+      const { deletedIds, notFoundIds } = deleteFlocksById(db, ids);
+      if (!deletedIds.length && ids.length) {
+        return res.status(404).json({ error: ids.length === 1 ? FLOCK_NOT_FOUND_MESSAGE : 'None of the selected flocks were found. They may already have been deleted.', code: ALREADY_DELETED_CODE, deletedCount: 0, notFoundIds });
+      }
+      saveDb(db);
+      return res.json({ success: true, count: deletedIds.length, deletedCount: deletedIds.length, notFoundIds });
     }
     db[key] = (db[key] as any[]).filter((r: any) => !ids.includes(r.id));
     saveDb(db);

@@ -189,3 +189,22 @@ test('discarding a refused create releases held changes instead of deleting them
   assert.equal(store.getSyncQueue()[0].status, 'failed');
   assert.equal(store.getSyncQueue()[0].error, 'Feed record not found.');
 });
+
+test('a queued delete of a flock that is already gone counts as done; other 404s still need attention', async () => {
+  const { store, sent } = await phone([
+    item('req-del-gone-1', 1, '/api/flocks/flock-gone-1', 'DELETE', undefined),
+    item('req-bulk-gone-1', 2, '/api/bulk-delete', 'POST', { type: 'flocks', ids: ['flock-gone-2'] }),
+    item('req-del-plain-1', 3, '/api/feed/feed-gone-1', 'DELETE', undefined),
+    item('req-after-0001', 4, '/api/expenses', 'POST', { id: 'exp-after-1' })
+  ], call => call.path === '/api/expenses' ? ok
+    : call.path === '/api/feed/feed-gone-1' ? [404, { error: 'Not found.' }]
+    : [404, { error: 'That flock was not found. It may already have been deleted.', code: 'ALREADY_DELETED' }]);
+  const result = await store.syncPendingQueue('token');
+  assert.equal(result.stopped, false);
+  assert.equal(result.syncedCount, 3, 'both already-deleted flock changes and the expense are done');
+  assert.equal(sent.length, 4);
+  const left = store.getSyncQueue();
+  assert.deepEqual(left.map(q => q.id), ['req-del-plain-1'], 'a 404 without the code is not silently dropped');
+  assert.equal(left[0].status, 'failed');
+  assert.equal(result.needsAttention, 1);
+});

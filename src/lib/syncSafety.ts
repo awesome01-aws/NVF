@@ -24,6 +24,12 @@ export const REQUEST_ID_HEADER = 'x-nvf-request-id';
 export const DEVICE_ID_HEADER = 'x-nvf-device-id';
 export const FORCE_DUPLICATE_HEADER = 'x-nvf-force-duplicate';
 export const POSSIBLE_DUPLICATE_CODE = 'POSSIBLE_DUPLICATE';
+/**
+ * Sent with a 404 by delete routes when the record to delete is not there (deleted already,
+ * perhaps by another phone). A queued offline delete that gets this answer is counted as done:
+ * the record is gone either way. A plain 404 without this code is still shown as a refused change.
+ */
+export const ALREADY_DELETED_CODE = 'ALREADY_DELETED';
 
 const RECEIPT_LIMIT = 500;
 const RECEIPT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
