@@ -1,0 +1,8 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.newvisionfarms.app",
+    "sha256_cert_fingerprints": ["8B:B4:B2:BF:5C:25:E1:78:94:2D:6C:A7:4C:38:CB:E2:A4:3A:87:32:AB:47:3A:9D:CA:12:DB:97:E5:04:78:B4"]
+  }
+}]
