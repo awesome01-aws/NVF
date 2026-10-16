@@ -39,11 +39,60 @@ export interface QueuedMutation {
   body?: any;
   type: string;
   description: string;
+  /** Unique ID sent as X-NVF-Request-Id, set when the change is queued. Older queued items fall back to `id`. */
+  requestId?: string;
+  /**
+   * Missing = waiting to send.
+   * 'failed'    = the server refused it (its message is in `error`); tried again on the next sync, never blocks others.
+   * 'duplicate' = looks like an entry someone else already made; waits for "Keep both" or "Discard".
+   * 'held'      = an earlier change it depends on (e.g. creating the same record) did not save yet.
+   */
+  status?: 'failed' | 'duplicate' | 'held';
+  error?: string;
+  duplicateOf?: { by?: string; summary?: string };
+  /** Set by "Keep both": resend without the possible-duplicate check. */
+  allowDuplicate?: boolean;
 }
 
 const DB_CACHE_KEY = 'nvf_offline_db_cache_v2';
 const SYNC_QUEUE_KEY = 'nvf_offline_sync_queue_v2';
 const SYNC_PROBLEM_KEY = 'nvf_offline_sync_problem_v1';
+const DEVICE_ID_KEY = 'nvf_device_id_v1';
+
+/** Random ID for queued changes. crypto.randomUUID is missing on plain-http pages and old WebViews. */
+export function newClientId(): string {
+  const c: any = (globalThis as any).crypto;
+  if (c && typeof c.randomUUID === 'function') {
+    try { return c.randomUUID(); } catch (_) { /* fall through */ }
+  }
+  const bytes = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === 'function') c.getRandomValues(bytes);
+  else for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Stable ID for this phone, so the server can tell "another phone made this" from "this phone". */
+function getDeviceId(): string {
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id || !/^[\w-]{8,100}$/.test(id)) {
+    id = newClientId();
+    try { localStorage.setItem(DEVICE_ID_KEY, id); } catch (_) { /* storage full: send a per-session ID */ }
+  }
+  return id;
+}
+
+/** Changes that the sync can send right now (not waiting on the person or on an earlier change). */
+export function getSendableQueue(): QueuedMutation[] {
+  return getSyncQueue().filter(item => !item.status);
+}
+
+/** Changes that need the person to look at them (refused, possible duplicate, or waiting on one of those). */
+export function getAttentionQueue(): QueuedMutation[] {
+  return getSyncQueue().filter(item => !!item.status);
+}
 export function getSyncProblem(): string | null { return localStorage.getItem(SYNC_PROBLEM_KEY); }
 // Capture the browser transport before api.ts installs its offline interceptor.
 const networkFetch = window.fetch.bind(window);
@@ -175,9 +224,12 @@ export function saveSyncQueue(queue: QueuedMutation[]): void {
 
 export function queueMutation(mutation: Omit<QueuedMutation, 'id' | 'timestamp'>): QueuedMutation {
   const queue = getSyncQueue();
+  // The request ID is fixed now, at creation, so every later retry of this change carries the same ID.
+  const id = newClientId();
   const newItem: QueuedMutation = {
     ...mutation,
-    id: crypto.randomUUID(),
+    id,
+    requestId: id,
     timestamp: Date.now()
   };
   queue.push(newItem);
@@ -686,30 +738,85 @@ export function executeLocalMutation(
 }
 
 // 4. Synchronization Engine
+/** ID of the record a queued create makes (only creates name their record in body.id). */
+function createdRecordId(item: QueuedMutation): string | undefined {
+  const id = item.method === 'POST' ? item.body?.id : undefined;
+  return typeof id === 'string' && id.length >= 8 ? id : undefined;
+}
+
+/** True when `item` refers to the record `rootId` (by URL or anywhere in its body). Record IDs are random, so a text match is safe. */
+function refersTo(item: QueuedMutation, rootId: string): boolean {
+  if (item.endpoint.includes(rootId)) return true;
+  try { return JSON.stringify(item.body ?? null).includes(rootId); } catch (_) { return false; }
+}
+
+/** Save new fields for one queued item, keeping any items added while the sync runs. */
+function updateQueuedItem(id: string, changes: Partial<QueuedMutation>): void {
+  saveSyncQueue(getSyncQueue().map(queued => {
+    if (queued.id !== id) return queued;
+    const next: QueuedMutation = { ...queued, ...changes };
+    (Object.keys(changes) as (keyof QueuedMutation)[]).forEach(key => { if (changes[key] === undefined) delete next[key]; });
+    return next;
+  }));
+}
+
+/** The status codes after which a change should simply be sent again later (server busy, timeout, cloud conflict). */
+function isTemporaryFailure(status: number, body: any): boolean {
+  return status === 408 || status === 429 || status >= 500 || (status === 409 && body?.code === 'CLOUD_CONFLICT');
+}
+
 let syncInProgress = false;
-export async function syncPendingQueue(token: string): Promise<{ success: boolean; syncedCount: number; retryable: boolean }> {
-  if (syncInProgress) return { success: false, syncedCount: 0, retryable: true };
-  const queue = getSyncQueue().sort((a, b) => a.timestamp - b.timestamp);
+/**
+ * Send queued changes in order.
+ * - A change the server refuses (4xx) is marked 'failed' with the server's message and the next change is sent.
+ * - A possible duplicate (409 POSSIBLE_DUPLICATE) waits for "Keep both" or "Discard"; the next change is sent.
+ * - A change that refers to a record whose create did not save is 'held' instead of being sent.
+ * - No connection, a server error, or a cloud conflict stops here and keeps the order for the next try.
+ * - Sign-in problems (401/403) stop here too; the change itself is fine.
+ * Every request carries the change's fixed request ID, so a retry after a lost reply is never applied twice.
+ */
+export async function syncPendingQueue(token: string): Promise<{ success: boolean; syncedCount: number; retryable: boolean; stopped: boolean; needsAttention: number }> {
+  const finish = (result: { success: boolean; syncedCount: number; retryable: boolean; stopped: boolean }) => ({ ...result, needsAttention: getAttentionQueue().length });
+  if (syncInProgress) return finish({ success: false, syncedCount: 0, retryable: true, stopped: true });
+  // Failed changes are tried again on each sync (the farm may have changed); duplicates wait for the person.
+  const queue = getSyncQueue().filter(item => item.status !== 'duplicate').sort((a, b) => a.timestamp - b.timestamp);
   if (queue.length === 0) {
-    return { success: true, syncedCount: 0, retryable: false };
+    return finish({ success: getSyncQueue().length === 0, syncedCount: 0, retryable: false, stopped: false });
   }
 
   syncInProgress = true;
   notifyOfflineChange();
   let synced = 0;
-  let retryable = true;
+  let retryable = false;
+  let stopped = false;
+  const deviceId = getDeviceId();
   try {
-    for (const item of queue) {
+    for (const listed of queue) {
+      const current = getSyncQueue();
+      const item = current.find(queued => queued.id === listed.id);
+      if (!item || item.status === 'duplicate') continue; // discarded or changed meanwhile
+
+      // Hold a change that refers to a record whose earlier create has not saved.
+      const blocker = current.find(other => other.id !== item.id && other.status && other.timestamp <= item.timestamp
+        && createdRecordId(other) && refersTo(item, createdRecordId(other)!));
+      if (blocker) {
+        if (item.status !== 'held') updateQueuedItem(item.id, { status: 'held', error: `Waiting for an earlier change that did not save: ${blocker.description}`, duplicateOf: undefined });
+        continue;
+      }
+      // Its earlier change has now saved (or was discarded): it is an ordinary waiting change again.
+      if (item.status === 'held') updateQueuedItem(item.id, { status: undefined, error: undefined });
+
+      const requestId = item.requestId || item.id;
+      const headers: Record<string, string> = { 'Authorization': token, 'Content-Type': 'application/json', 'X-NVF-Device-Id': deviceId };
+      if (/^[\w-]{8,100}$/.test(String(requestId))) headers['X-NVF-Request-Id'] = String(requestId);
+      if (item.allowDuplicate) headers['X-NVF-Force-Duplicate'] = '1';
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 12000);
       let response: Response;
       try {
         response = await networkFetch(apiUrl(item.endpoint), {
           method: item.method,
-          headers: {
-            'Authorization': token,
-            'Content-Type': 'application/json'
-          },
+          headers,
           body: item.body ? JSON.stringify(item.body) : undefined,
           signal: controller.signal
         });
@@ -719,35 +826,83 @@ export async function syncPendingQueue(token: string): Promise<{ success: boolea
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
-        localStorage.setItem(SYNC_PROBLEM_KEY, typeof body.error === 'string' ? body.error : `Server rejected a change (${response.status}).`);
-        retryable = response.status === 408 || response.status === 429 || response.status >= 500;
-        break;
+        const message = typeof body.error === 'string' ? body.error : `Server rejected a change (${response.status}).`;
+        if (response.status === 409 && body?.code === 'POSSIBLE_DUPLICATE') {
+          updateQueuedItem(item.id, { status: 'duplicate', error: message, duplicateOf: { by: body.duplicate?.by, summary: body.duplicate?.summary } });
+          continue;
+        }
+        if (isTemporaryFailure(response.status, body) || response.status === 401 || response.status === 403) {
+          localStorage.setItem(SYNC_PROBLEM_KEY, message);
+          retryable = isTemporaryFailure(response.status, body);
+          stopped = true;
+          break;
+        }
+        // Refused for this change only: keep it for the person and move on.
+        updateQueuedItem(item.id, { status: 'failed', error: message, duplicateOf: undefined });
+        continue;
       }
       // Remove only this acknowledged operation. Keep operations added while sync is running.
       saveSyncQueue(getSyncQueue().filter(queued => queued.id !== item.id));
-      localStorage.removeItem(SYNC_PROBLEM_KEY);
       synced++;
     }
+    if (!stopped) localStorage.removeItem(SYNC_PROBLEM_KEY);
   } catch (err) {
     localStorage.setItem(SYNC_PROBLEM_KEY, 'Cannot reach the farm server. Retry when connected.');
     console.warn('Pending changes remain on this device:', err);
+    retryable = true;
+    stopped = true;
   } finally {
     syncInProgress = false;
   }
   const remaining = getSyncQueue().length;
-  if (remaining === 0) {
+  if (!stopped && getSendableQueue().length === 0) {
     notifyOfflineChange();
-    // Fetch fresh database snapshot from server
-    try {
-      const dataRes = await networkFetch(apiUrl('/api/data'), { headers: { 'Authorization': token } });
-      if (dataRes.ok) {
-        const freshDb = await dataRes.json();
-        saveOfflineDb(freshDb, true);
-      }
-    } catch (e) {}
+    // Fetch fresh database snapshot from server (changes that did not save drop out of the phone's copy).
+    await refreshOfflineCache(token);
   } else {
     notifyOfflineChange();
   }
 
-  return { success: remaining === 0, syncedCount: synced, retryable };
+  return finish({ success: remaining === 0, syncedCount: synced, retryable, stopped });
+}
+
+/** Replace the phone's copy with the server's data. */
+async function refreshOfflineCache(token: string): Promise<void> {
+  try {
+    const dataRes = await networkFetch(apiUrl('/api/data'), { headers: { 'Authorization': token } });
+    if (dataRes.ok) {
+      const freshDb = await dataRes.json();
+      saveOfflineDb(freshDb, true);
+    }
+  } catch (e) {}
+}
+
+/** "Retry": send a refused or held change again on the next sync. */
+export function retryQueuedChange(id: string): void {
+  updateQueuedItem(id, { status: undefined, error: undefined, duplicateOf: undefined });
+}
+
+/** "Keep both": send a possible duplicate again, telling the server it is intended. */
+export function keepBothQueuedChange(id: string): void {
+  updateQueuedItem(id, { status: undefined, error: undefined, duplicateOf: undefined, allowDuplicate: true });
+}
+
+/**
+ * "Discard": remove one change from this phone. Nothing on the server is deleted.
+ * Later changes that were held because of it are released (sent normally; the server decides).
+ */
+export async function discardQueuedChange(id: string, token?: string | null): Promise<void> {
+  const queue = getSyncQueue();
+  const removed = queue.find(item => item.id === id);
+  if (!removed) return;
+  const rootId = createdRecordId(removed);
+  saveSyncQueue(queue.filter(item => item.id !== id).map(item => {
+    if (item.status === 'held' && rootId && refersTo(item, rootId)) {
+      const { status, error, ...rest } = item;
+      return rest;
+    }
+    return item;
+  }));
+  // The phone's copy still shows the discarded change; reload it when nothing else is waiting to send.
+  if (token && navigator.onLine && getSendableQueue().length === 0) await refreshOfflineCache(token);
 }

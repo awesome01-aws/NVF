@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { getOfflineDb, saveOfflineDb, executeLocalMutation, syncPendingQueue, getSyncQueue } from './offlineStore';
+import { getOfflineDb, saveOfflineDb, executeLocalMutation, syncPendingQueue, getSendableQueue } from './offlineStore';
 import { apiUrl } from './apiOrigin';
 
 const originalFetch = window.fetch;
@@ -37,7 +37,8 @@ export function setupOfflineInterceptor() {
         try {
           // Background reads must never replay queued writes. Replay has its own
           // bounded scheduler below; otherwise a failed write makes every poll retry.
-          if (getSyncQueue().length > 0) {
+          // Changes that need the person (refused / possible duplicate) do not hide the server's data.
+          if (getSendableQueue().length > 0) {
             return new Response(JSON.stringify(getOfflineDb()), { status: 200, headers: { 'Content-Type': 'application/json', 'X-NVF-Offline': 'pending' } });
           }
           const response = await originalFetch.call(window, remoteInput, init);
@@ -172,18 +173,19 @@ export function initAutoSyncListeners() {
   let blocked = false;
 
   const schedule = (delay: number) => {
-    if (timer || running || blocked || !navigator.onLine || getSyncQueue().length === 0) return;
+    if (timer || running || blocked || !navigator.onLine || getSendableQueue().length === 0) return;
     timer = setTimeout(run, delay);
   };
 
   const run = async () => {
     timer = undefined;
-    if (running || blocked || !navigator.onLine || getSyncQueue().length === 0) return;
+    if (running || blocked || !navigator.onLine || getSendableQueue().length === 0) return;
     running = true;
     const token = localStorage.getItem('nvf_operator_token') || 'open-access-operator';
     try {
       const result = await syncPendingQueue(token);
-      if (result.success) failures = 0;
+      // A refused change no longer stops the queue; only a stop (no connection, server error, sign-in) counts as a failure.
+      if (result.success || !result.stopped) failures = 0;
       else if (!result.retryable) blocked = true;
       else failures = Math.min(failures + 1, 4);
     } finally {
@@ -194,7 +196,7 @@ export function initAutoSyncListeners() {
 
   window.addEventListener('nvf_offline_change', (event: Event) => {
     if ((event as CustomEvent).detail?.change !== 'queue') return;
-    if (getSyncQueue().length === 0) {
+    if (getSendableQueue().length === 0) {
       if (timer) clearTimeout(timer);
       timer = undefined;
       failures = 0;
