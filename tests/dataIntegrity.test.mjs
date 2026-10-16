@@ -130,3 +130,77 @@ test('cage delete uses the unique ID; a name alone is accepted only when exactly
     assert.equal((await call('DELETE', '/api/cages/solo')).status, 404);
   });
 });
+
+test('older routes follow the same linked-stock rules as the main routes', async () => {
+  await farm(async ({ call, action, data, flock }) => {
+    // Quail flock in its own cage, made the normal way.
+    const cage = await action('farm_cage_add', { animalType: 'Quail', blockName: 'QUAIL HOUSE', cageName: 'Q1' });
+    const other = await action('farm_cage_add', { animalType: 'Quail', blockName: 'QUAIL HOUSE', cageName: 'Q2' });
+    const quail = await action('quail_flock_add', { date: '2026-10-01', name: 'Layers', quantity: 30, ageWeeks: 6, cageId: cage.id });
+    const rowId = `flock-${quail.id}`;
+    assert.equal((await data()).cage_allocations.find(a => a.id === rowId).quantity, 30);
+
+    // Hand-made quail cage rows and bird transfers are refused (they would bypass the quail flock).
+    assert.equal((await call('POST', '/api/cage_allocations', { blockName: 'QUAIL HOUSE', cageName: 'Q2', flockName: 'Ghost quail', species: 'Quail', quantity: 9 })).status, 409);
+    assert.equal((await call('POST', '/api/cage_transfers', { species: 'Chicken', flockName: 'Layers', fromCage: 'Q1', toCage: 'Q2', quantity: 5, flockId: quail.id })).status, 409);
+    assert.equal((await call('POST', '/api/cage_transfers', { species: 'Chicken', flockName: 'Anything', fromCage: 'Q1', toCage: 'Q2', quantity: 5 })).status, 409, 'cannot take birds out of a quail row by cage name');
+    // Moving quail to another cage through the generic row edit is refused; a plain note edit still works.
+    assert.equal((await call('PUT', `/api/cage_allocations/${rowId}`, { cageName: 'Q2', blockName: 'QUAIL HOUSE' })).status, 409);
+    assert.equal((await call('PUT', `/api/cage_allocations/${rowId}`, { cageName: 'Q1', blockName: 'QUAIL HOUSE', notes: 'Near the door' })).status, 200);
+    let farmNow = await data();
+    assert.equal(farmNow.cage_allocations.filter(a => a.flockName === 'Layers').length, 1);
+    assert.equal(farmNow.cage_allocations.find(a => a.id === rowId).cageName, 'Q1');
+    assert.equal(farmNow.cage_allocations.find(a => a.id === rowId).quantity, 30);
+    assert.ok(!farmNow.cage_allocations.some(a => a.flockName === 'Ghost quail'));
+
+    // Deleting the quail flock through the older cage-row route now clears its cage row too
+    // (it used to leave a ghost count of 30 that also blocked the cage from being deleted).
+    const removed = await call('DELETE', `/api/cage_allocations/${rowId}`);
+    assert.equal(removed.status, 200);
+    assert.equal(removed.body.deletedType, 'flock');
+    farmNow = await data();
+    assert.ok(!farmNow.flocks.some(f => f.id === quail.id));
+    assert.ok(!farmNow.cage_allocations.some(a => a.id === rowId || a.flockName === 'Layers'));
+    assert.equal((await call('DELETE', `/api/cages/${cage.id}`)).status, 200, 'the now-empty cage can be removed');
+    assert.equal((await call('DELETE', `/api/cages/${other.id}`)).status, 200);
+
+    // Chicken flock: older routes keep the cage row in step with the flock count.
+    const hens = await flock('Hens', 20);
+    await call('POST', '/api/cage_allocations', { blockName: 'BLOCK 0', cageName: 'ST 1', flockName: 'Hens', quantity: 20 });
+    const row = () => data().then(d => d.cage_allocations.find(a => a.flockName === 'Hens'));
+    const loss = (await call('POST', '/api/mortality', { date: '2026-10-02', flockId: hens.id, quantity: 3 })).body;
+    assert.equal((await row()).quantity, 17);
+    assert.equal((await call('DELETE', `/api/mortality/${loss.id}`)).status, 200);
+    assert.equal((await row()).quantity, 20, 'removing a loss restores the cage row as well as the flock');
+    const meal = (await call('POST', '/api/fowls-eaten', { date: '2026-10-02', flockId: hens.id, quantity: 2 })).body;
+    assert.equal((await row()).quantity, 18);
+    assert.equal((await call('DELETE', `/api/fowls-eaten/${meal.id}`)).status, 200);
+    assert.equal((await row()).quantity, 20);
+    // /api/bulk-update for flocks uses the bulk flock rules (cage row follows).
+    assert.equal((await call('POST', '/api/bulk-update', { type: 'flocks', ids: [hens.id], updates: { quantity: 19 } })).status, 200);
+    assert.equal((await row()).quantity, 19);
+    // POST /api/flocks with an existing id is an edit: rename carries the cage row along.
+    const renamed = await call('POST', '/api/flocks', { id: hens.id, name: 'Hens A', breed: 'Brahma', quantity: 19, ageWeeks: 2, dateAdded: '2026-10-01' });
+    assert.equal(renamed.status, 200);
+    farmNow = await data();
+    assert.equal(farmNow.flocks.filter(f => f.id === hens.id).length, 1);
+    assert.equal(farmNow.cage_allocations.find(a => a.flockName === 'Hens A')?.quantity, 19);
+
+    // The legacy batch /api/sync route: flock edits, deletes and loss removals follow the same rules.
+    const sync = items => call('POST', '/api/sync', { items });
+    const syncLoss = (await call('POST', '/api/mortality', { date: '2026-10-03', flockId: hens.id, quantity: 4 })).body;
+    assert.equal((await sync([{ endpoint: `/api/mortality/${syncLoss.id}`, method: 'DELETE', timestamp: 1 }])).status, 200);
+    assert.equal((await data()).flocks.find(f => f.id === hens.id).quantity, 19, 'sync loss removal gives the birds back');
+    assert.equal((await data()).cage_allocations.find(a => a.flockName === 'Hens A').quantity, 19);
+    assert.equal((await sync([{ endpoint: `/api/flocks/${hens.id}`, method: 'PUT', body: { quantity: 15 }, timestamp: 2 }])).status, 200);
+    assert.equal((await data()).cage_allocations.find(a => a.flockName === 'Hens A').quantity, 15);
+    assert.equal((await sync([{ endpoint: `/api/flocks/${hens.id}`, method: 'DELETE', timestamp: 3 }, { endpoint: '/api/flocks/never-existed-1', method: 'DELETE', timestamp: 4 }])).status, 200);
+    farmNow = await data();
+    assert.ok(!farmNow.flocks.some(f => f.id === hens.id));
+    assert.ok(!farmNow.cage_allocations.some(a => a.flockName === 'Hens A'), 'sync flock delete clears its cage row');
+    const b1 = await flock('Batch sync 1');
+    await call('POST', '/api/cage_allocations', { blockName: 'BLOCK 0', cageName: 'ST 2', flockName: 'Batch sync 1', quantity: 10 });
+    assert.equal((await sync([{ endpoint: '/api/bulk-delete', method: 'POST', body: { type: 'flocks', ids: [b1.id] }, timestamp: 5 }])).status, 200);
+    assert.ok(!(await data()).cage_allocations.some(a => a.flockName === 'Batch sync 1'));
+  });
+});

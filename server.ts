@@ -187,6 +187,157 @@ function deleteFlocksById(db: any, rawIds: unknown[]): { deletedIds: string[]; n
   return { deletedIds, notFoundIds };
 }
 
+/**
+ * Edit one flock and keep its cage rows and linked records (losses, home use, sales) in step.
+ * Used by PUT /api/flocks/:id and by the older routes that also edit a flock (POST with an existing id, /api/sync).
+ */
+function updateFlockRecord(db: any, id: string, body: any): { status: number; error?: string; flock?: any } {
+  const flockIndex = db.flocks.findIndex((f: any) => f.id === id);
+  if (flockIndex === -1) return { status: 404, error: "Flock not found." };
+
+  const oldFlock = db.flocks[flockIndex];
+  const oldName = oldFlock.name;
+  const { name, breed, quantity, ageWeeks, dateAdded, notes, species, countMode, cocksCount, hensCount, speciesBreakdown } = body;
+
+  if (quantity !== undefined && !isValidNonNegativeNumber(quantity)) {
+    return { status: 400, error: "Quantity must be a valid non-negative number." };
+  }
+  if (ageWeeks !== undefined && !isValidNonNegativeNumber(ageWeeks)) {
+    return { status: 400, error: "Age (in weeks) must be a valid non-negative number." };
+  }
+  
+  const updatedAgeWeeks = ageWeeks !== undefined ? Number(ageWeeks) : oldFlock.ageWeeks;
+  const updatedDateAdded = dateAdded !== undefined ? String(dateAdded) : oldFlock.dateAdded;
+
+  const updatedFlock = {
+    ...oldFlock,
+    name: name !== undefined ? String(name).trim() : oldFlock.name,
+    breed: breed !== undefined ? String(breed).trim() : oldFlock.breed,
+    quantity: quantity !== undefined ? Number(quantity) : oldFlock.quantity,
+    ageWeeks: updatedAgeWeeks,
+    dateAdded: updatedDateAdded,
+    species: species !== undefined ? String(species) : (oldFlock.species || 'Chicken'),
+    countMode: countMode !== undefined ? countMode : oldFlock.countMode,
+    cocksCount: cocksCount !== undefined ? Number(cocksCount) : oldFlock.cocksCount,
+    hensCount: hensCount !== undefined ? Number(hensCount) : oldFlock.hensCount,
+    speciesBreakdown: Array.isArray(speciesBreakdown) ? speciesBreakdown : oldFlock.speciesBreakdown,
+    notes: notes !== undefined ? String(notes).trim() : oldFlock.notes,
+    initialAgeWeeks: updatedAgeWeeks
+  };
+
+  db.flocks[flockIndex] = updatedFlock;
+
+  // Synchronize connected cage allocations
+  if (Array.isArray(db.cage_allocations)) {
+    db.cage_allocations.forEach((alloc: any, aIdx: number) => {
+      const isMatch = alloc.id === `flock-${id}` ||
+        (alloc.flockName && alloc.flockName.trim().toLowerCase() === oldName.trim().toLowerCase()) ||
+        (alloc.flockName && alloc.flockName.trim().toLowerCase() === updatedFlock.name.trim().toLowerCase());
+      if (isMatch) {
+        db.cage_allocations[aIdx] = {
+          ...alloc,
+          flockName: updatedFlock.name,
+          species: updatedFlock.species,
+          quantity: updatedFlock.quantity,
+          ageWeeks: updatedFlock.ageWeeks,
+          speciesBreakdown: updatedFlock.speciesBreakdown,
+          notes: updatedFlock.notes || alloc.notes
+        };
+      }
+    });
+  }
+
+  // Synchronize references in related tables if flock name changed
+  if (oldName.trim().toLowerCase() !== updatedFlock.name.trim().toLowerCase()) {
+    if (Array.isArray(db.mortality)) {
+      db.mortality.forEach((m: any) => {
+        if (m.flockId === id || (m.flockName && m.flockName.trim().toLowerCase() === oldName.trim().toLowerCase())) {
+          m.flockName = updatedFlock.name;
+        }
+      });
+    }
+    if (Array.isArray(db.fowls_eaten)) {
+      db.fowls_eaten.forEach((fe: any) => {
+        if (fe.flockId === id || (fe.flockName && fe.flockName.trim().toLowerCase() === oldName.trim().toLowerCase())) {
+          fe.flockName = updatedFlock.name;
+        }
+      });
+    }
+    if (Array.isArray(db.poultry_sales)) {
+      db.poultry_sales.forEach((s: any) => {
+        if (s.flockId === id) {
+          s.flockName = updatedFlock.name;
+        }
+      });
+    }
+  }
+
+  return { status: 200, flock: updatedFlock };
+}
+
+/**
+ * Bulk-edit flocks (species, breed, age, count...) and keep their cage rows in step.
+ * Used by PUT /api/flocks-bulk and by the older /api/bulk-update (type "flocks") routes.
+ */
+function bulkUpdateFlocks(db: any, ids: string[], updates: any): number {
+  let updatedCount = 0;
+  db.flocks = db.flocks.map((f: any) => {
+    if (ids.includes(f.id)) {
+      updatedCount++;
+      const newSpecies = updates.species !== undefined && updates.species !== '' ? String(updates.species) : f.species;
+      const newBreed = updates.breed !== undefined && updates.breed !== '' ? String(updates.breed) : f.breed;
+      const newAgeWeeks = updates.ageWeeks !== undefined && updates.ageWeeks !== '' ? Number(updates.ageWeeks) : f.ageWeeks;
+      const newDateAdded = updates.dateAdded !== undefined && updates.dateAdded !== '' ? String(updates.dateAdded) : f.dateAdded;
+      const newNotes = updates.notes !== undefined && updates.notes !== '' ? String(updates.notes) : f.notes;
+      const newQuantity = updates.quantity !== undefined && updates.quantity !== '' ? Number(updates.quantity) : f.quantity;
+      const newHensCount = updates.hensCount !== undefined && updates.hensCount !== '' ? Number(updates.hensCount) : f.hensCount;
+      const newCocksCount = updates.cocksCount !== undefined && updates.cocksCount !== '' ? Number(updates.cocksCount) : f.cocksCount;
+      const newCountMode = updates.countMode !== undefined && updates.countMode !== '' ? updates.countMode : f.countMode;
+
+      const updated = {
+        ...f,
+        species: newSpecies,
+        breed: newBreed,
+        ageWeeks: isNaN(newAgeWeeks) ? f.ageWeeks : newAgeWeeks,
+        dateAdded: newDateAdded,
+        notes: newNotes,
+        quantity: isNaN(newQuantity) ? f.quantity : newQuantity,
+        initialAgeWeeks: isNaN(newAgeWeeks) ? f.initialAgeWeeks : newAgeWeeks,
+        hensCount: newHensCount !== undefined ? newHensCount : f.hensCount,
+        cocksCount: newCocksCount !== undefined ? newCocksCount : f.cocksCount,
+        countMode: newCountMode !== undefined ? newCountMode : f.countMode
+      };
+
+      // Sync to cage_allocations
+      if (Array.isArray(db.cage_allocations)) {
+        db.cage_allocations.forEach((alloc: any, aIdx: number) => {
+          if (alloc.id === `flock-${f.id}` || (alloc.flockName && alloc.flockName.trim().toLowerCase() === f.name.trim().toLowerCase())) {
+            db.cage_allocations[aIdx] = {
+              ...db.cage_allocations[aIdx],
+              species: updated.species,
+              quantity: updated.quantity,
+              ageWeeks: updated.ageWeeks,
+              notes: updated.notes || alloc.notes
+            };
+          }
+        });
+      }
+
+      return updated;
+    }
+    return f;
+  });
+
+  return updatedCount;
+}
+
+/** Quail and rabbits have their own linked actions (Farm → Quail / Rabbits); these words match isQuailFlock in farmActions. */
+function isQuailOrRabbit(species: unknown, breed?: unknown): boolean {
+  const text = String(species || breed || '').toLowerCase();
+  return text.includes('quail') || text.includes('rabbit');
+}
+const LINKED_ANIMALS_MESSAGE = 'Quail and rabbits are placed and moved from Farm → Quail or Farm → Rabbits, so their cages and counts stay linked.';
+
 function parseExcelFlocksAndAllocations() {
   let excelPath = path.join(process.cwd(), "POULTRY RECORDS.xlsx");
   if (!fs.existsSync(excelPath)) {
@@ -1397,99 +1548,25 @@ async function startServer() {
     };
 
     if (existsIndex !== -1) {
-      db.flocks[existsIndex] = newFlock;
-    } else {
-      db.flocks.push(newFlock);
+      // Older clients re-send a create for a flock that already exists: treat it as an edit so the
+      // flock's cage rows and linked records stay in step (same rules as PUT /api/flocks/:id).
+      const { id: _ignored, initialAgeWeeks: _derived, ...edit } = newFlock;
+      const result = updateFlockRecord(db, flockId, edit);
+      if (result.error) return res.status(result.status).json({ error: result.error });
+      saveDb(db);
+      return res.json(result.flock);
     }
+    db.flocks.push(newFlock);
     saveDb(db);
     res.json(newFlock);
   });
 
   app.put("/api/flocks/:id", requireAuth, (req, res) => {
     const db = loadDb();
-    const { id } = req.params;
-    const flockIndex = db.flocks.findIndex((f: any) => f.id === id);
-    if (flockIndex === -1) return res.status(404).json({ error: "Flock not found." });
-
-    const oldFlock = db.flocks[flockIndex];
-    const oldName = oldFlock.name;
-    const { name, breed, quantity, ageWeeks, dateAdded, notes, species, countMode, cocksCount, hensCount, speciesBreakdown } = req.body;
-
-    if (quantity !== undefined && !isValidNonNegativeNumber(quantity)) {
-      return res.status(400).json({ error: "Quantity must be a valid non-negative number." });
-    }
-    if (ageWeeks !== undefined && !isValidNonNegativeNumber(ageWeeks)) {
-      return res.status(400).json({ error: "Age (in weeks) must be a valid non-negative number." });
-    }
-    
-    const updatedAgeWeeks = ageWeeks !== undefined ? Number(ageWeeks) : oldFlock.ageWeeks;
-    const updatedDateAdded = dateAdded !== undefined ? String(dateAdded) : oldFlock.dateAdded;
-
-    const updatedFlock = {
-      ...oldFlock,
-      name: name !== undefined ? String(name).trim() : oldFlock.name,
-      breed: breed !== undefined ? String(breed).trim() : oldFlock.breed,
-      quantity: quantity !== undefined ? Number(quantity) : oldFlock.quantity,
-      ageWeeks: updatedAgeWeeks,
-      dateAdded: updatedDateAdded,
-      species: species !== undefined ? String(species) : (oldFlock.species || 'Chicken'),
-      countMode: countMode !== undefined ? countMode : oldFlock.countMode,
-      cocksCount: cocksCount !== undefined ? Number(cocksCount) : oldFlock.cocksCount,
-      hensCount: hensCount !== undefined ? Number(hensCount) : oldFlock.hensCount,
-      speciesBreakdown: Array.isArray(speciesBreakdown) ? speciesBreakdown : oldFlock.speciesBreakdown,
-      notes: notes !== undefined ? String(notes).trim() : oldFlock.notes,
-      initialAgeWeeks: updatedAgeWeeks
-    };
-
-    db.flocks[flockIndex] = updatedFlock;
-
-    // Synchronize connected cage allocations
-    if (Array.isArray(db.cage_allocations)) {
-      db.cage_allocations.forEach((alloc: any, aIdx: number) => {
-        const isMatch = alloc.id === `flock-${id}` ||
-          (alloc.flockName && alloc.flockName.trim().toLowerCase() === oldName.trim().toLowerCase()) ||
-          (alloc.flockName && alloc.flockName.trim().toLowerCase() === updatedFlock.name.trim().toLowerCase());
-        if (isMatch) {
-          db.cage_allocations[aIdx] = {
-            ...alloc,
-            flockName: updatedFlock.name,
-            species: updatedFlock.species,
-            quantity: updatedFlock.quantity,
-            ageWeeks: updatedFlock.ageWeeks,
-            speciesBreakdown: updatedFlock.speciesBreakdown,
-            notes: updatedFlock.notes || alloc.notes
-          };
-        }
-      });
-    }
-
-    // Synchronize references in related tables if flock name changed
-    if (oldName.trim().toLowerCase() !== updatedFlock.name.trim().toLowerCase()) {
-      if (Array.isArray(db.mortality)) {
-        db.mortality.forEach((m: any) => {
-          if (m.flockId === id || (m.flockName && m.flockName.trim().toLowerCase() === oldName.trim().toLowerCase())) {
-            m.flockName = updatedFlock.name;
-          }
-        });
-      }
-      if (Array.isArray(db.fowls_eaten)) {
-        db.fowls_eaten.forEach((fe: any) => {
-          if (fe.flockId === id || (fe.flockName && fe.flockName.trim().toLowerCase() === oldName.trim().toLowerCase())) {
-            fe.flockName = updatedFlock.name;
-          }
-        });
-      }
-      if (Array.isArray(db.poultry_sales)) {
-        db.poultry_sales.forEach((s: any) => {
-          if (s.flockId === id) {
-            s.flockName = updatedFlock.name;
-          }
-        });
-      }
-    }
-
+    const result = updateFlockRecord(db, req.params.id, req.body || {});
+    if (result.error) return res.status(result.status).json({ error: result.error });
     saveDb(db);
-    res.json(updatedFlock);
+    res.json(result.flock);
   });
 
   app.delete("/api/flocks/:id", requireAuth, (req, res) => {
@@ -1513,54 +1590,7 @@ async function startServer() {
       return res.status(400).json({ error: "IDs array and updates object are required." });
     }
 
-    let updatedCount = 0;
-    db.flocks = db.flocks.map((f: any) => {
-      if (ids.includes(f.id)) {
-        updatedCount++;
-        const newSpecies = updates.species !== undefined && updates.species !== '' ? String(updates.species) : f.species;
-        const newBreed = updates.breed !== undefined && updates.breed !== '' ? String(updates.breed) : f.breed;
-        const newAgeWeeks = updates.ageWeeks !== undefined && updates.ageWeeks !== '' ? Number(updates.ageWeeks) : f.ageWeeks;
-        const newDateAdded = updates.dateAdded !== undefined && updates.dateAdded !== '' ? String(updates.dateAdded) : f.dateAdded;
-        const newNotes = updates.notes !== undefined && updates.notes !== '' ? String(updates.notes) : f.notes;
-        const newQuantity = updates.quantity !== undefined && updates.quantity !== '' ? Number(updates.quantity) : f.quantity;
-        const newHensCount = updates.hensCount !== undefined && updates.hensCount !== '' ? Number(updates.hensCount) : f.hensCount;
-        const newCocksCount = updates.cocksCount !== undefined && updates.cocksCount !== '' ? Number(updates.cocksCount) : f.cocksCount;
-        const newCountMode = updates.countMode !== undefined && updates.countMode !== '' ? updates.countMode : f.countMode;
-
-        const updated = {
-          ...f,
-          species: newSpecies,
-          breed: newBreed,
-          ageWeeks: isNaN(newAgeWeeks) ? f.ageWeeks : newAgeWeeks,
-          dateAdded: newDateAdded,
-          notes: newNotes,
-          quantity: isNaN(newQuantity) ? f.quantity : newQuantity,
-          initialAgeWeeks: isNaN(newAgeWeeks) ? f.initialAgeWeeks : newAgeWeeks,
-          hensCount: newHensCount !== undefined ? newHensCount : f.hensCount,
-          cocksCount: newCocksCount !== undefined ? newCocksCount : f.cocksCount,
-          countMode: newCountMode !== undefined ? newCountMode : f.countMode
-        };
-
-        // Sync to cage_allocations
-        if (Array.isArray(db.cage_allocations)) {
-          db.cage_allocations.forEach((alloc: any, aIdx: number) => {
-            if (alloc.id === `flock-${f.id}` || (alloc.flockName && alloc.flockName.trim().toLowerCase() === f.name.trim().toLowerCase())) {
-              db.cage_allocations[aIdx] = {
-                ...db.cage_allocations[aIdx],
-                species: updated.species,
-                quantity: updated.quantity,
-                ageWeeks: updated.ageWeeks,
-                notes: updated.notes || alloc.notes
-              };
-            }
-          });
-        }
-
-        return updated;
-      }
-      return f;
-    });
-
+    const updatedCount = bulkUpdateFlocks(db, ids, updates);
     saveDb(db);
     res.json({ success: true, updatedCount });
   });
@@ -1814,6 +1844,7 @@ async function startServer() {
     const flock = db.flocks.find((f: any) => f.id === item.flockId);
     if (flock) {
       flock.quantity += item.quantity;
+      syncFlockCageRows(db, flock); // the cage row shows the restored count too (as when the loss was recorded)
     }
 
     db.mortality.splice(mortIndex, 1);
@@ -1901,6 +1932,7 @@ async function startServer() {
     if (flock) {
       // Restore the flock quantity if record deleted
       flock.quantity += item.quantity;
+      syncFlockCageRows(db, flock); // keep the cage row count in step (as when the record was saved)
     }
 
     db.fowls_eaten.splice(index, 1);
@@ -2012,6 +2044,8 @@ async function startServer() {
     if (!cageName || !flockName || quantity === undefined) {
       return res.status(400).json({ error: "Cage name, flock name, and quantity are required." });
     }
+    // A hand-typed cage row for quail or rabbits would add animals to a cage without a linked flock/rabbit.
+    if (isQuailOrRabbit(species)) return res.status(409).json({ error: LINKED_ANIMALS_MESSAGE });
 
     if (!isValidNonNegativeNumber(quantity)) {
       return res.status(400).json({ error: "Quantity must be a valid non-negative number." });
@@ -2062,6 +2096,18 @@ async function startServer() {
 
     if (req.body.ageWeeks !== undefined && req.body.ageWeeks !== "" && !isValidNonNegativeNumber(req.body.ageWeeks)) {
       return res.status(400).json({ error: "Age (weeks) must be a valid non-negative number." });
+    }
+
+    // Quail rows: moving them to another cage (or changing their species) must go through "Move quail",
+    // which records the move and keeps the flock and its cage row together. Other edits are still allowed.
+    const linkedRow = existingAllocation || (linkedFlock ? (db.cage_allocations || []).find((a: any) => isFlockCageRow(a, linkedFlock)) : undefined);
+    if (isQuailOrRabbit(linkedFlock?.species || existingAllocation?.species, linkedFlock?.breed)) {
+      const changed = (value: unknown, current: unknown, upper = false) => value !== undefined && value !== '' &&
+        (upper ? String(value).trim().toUpperCase() !== String(current || '').trim().toUpperCase() : String(value).trim().toLowerCase() !== String(current || '').trim().toLowerCase());
+      if (changed(req.body.cageName, linkedRow?.cageName ?? linkedFlock?.notes) || changed(req.body.blockName, linkedRow?.blockName, true) ||
+        changed(req.body.species, linkedFlock?.species || existingAllocation?.species)) {
+        return res.status(409).json({ error: LINKED_ANIMALS_MESSAGE });
+      }
     }
 
     if (targetId.startsWith("flock-")) {
@@ -2154,13 +2200,12 @@ async function startServer() {
 
     if (targetId.startsWith("flock-")) {
       const flockId = targetId.replace("flock-", "");
-      if (db.flocks) {
-        const flockIdx = db.flocks.findIndex((f: any) => f.id === flockId);
-        if (flockIdx !== -1) {
-          db.flocks.splice(flockIdx, 1);
-          saveDb(db);
-          return res.json({ success: true, deletedType: "flock" });
-        }
+      // This older route deletes the whole flock. It used to remove only the flock record and leave its
+      // cage row (a ghost count that also blocked the cage from being deleted) and its loss records.
+      // Now it uses the same clean-up as DELETE /api/flocks/:id.
+      if (deleteFlocksById(db, [flockId]).deletedIds.length) {
+        saveDb(db);
+        return res.json({ success: true, deletedType: "flock" });
       }
     }
 
@@ -2213,6 +2258,13 @@ function calculateCurrentAgeWeeks(
       return res.status(400).json({ error: "Bird age (weeks) must be a valid non-negative number." });
     }
 
+    // Quail and rabbit moves have their own linked actions; this older bird-transfer route would move
+    // cage rows without updating the quail flock or rabbit housing.
+    const transferFlock = flockId ? (db.flocks || []).find((f: any) => f.id === flockId) : undefined;
+    if (isQuailOrRabbit(species) || (transferFlock && isQuailOrRabbit(transferFlock.species, transferFlock.breed))) {
+      return res.status(409).json({ error: LINKED_ANIMALS_MESSAGE });
+    }
+
     const qtyToMove = Number(quantity);
     const transferDate = date || cameroonDate();
     const cleanFromCage = String(fromCage).trim();
@@ -2237,6 +2289,12 @@ function calculateCurrentAgeWeeks(
         if (sourceFlock.ageWeeks !== undefined) baseBirdAge = sourceFlock.ageWeeks;
       }
     }
+
+    // Do not take birds out of (or add them to) a quail row by cage name: quail counts follow the quail flock.
+    // (Same row look-ups as steps 1 and 2 below, checked before anything changes.)
+    const plannedSource = db.cage_allocations.find((a: any) => a.cageName.toLowerCase() === cleanFromCage.toLowerCase());
+    const plannedDest = db.cage_allocations.find((a: any) => a.cageName.toLowerCase() === cleanToCage.toLowerCase() && a.flockName.toLowerCase() === fName.toLowerCase());
+    if (isQuailOrRabbit(plannedSource?.species) || isQuailOrRabbit(plannedDest?.species)) return res.status(409).json({ error: LINKED_ANIMALS_MESSAGE });
 
     // 1. Update source cage allocation
     const sourceAllocIdx = db.cage_allocations.findIndex((a: any) =>
@@ -3252,6 +3310,12 @@ function calculateCurrentAgeWeeks(
       return res.status(400).json({ error: "Invalid type specified for bulk update" });
     }
     if (type === 'incubator' && db.incubator_records.some((record: any) => record.ownerType === 'farm' && ids.includes(record.id))) return res.status(409).json({ error: 'Manage farm-owned quail batches in Farm → Quail.' });
+    if (type === 'flocks') {
+      // Same rules as PUT /api/flocks-bulk, so the flocks' cage rows keep the same counts.
+      const updatedCount = bulkUpdateFlocks(db, ids, updates);
+      saveDb(db);
+      return res.json({ success: true, count: updatedCount });
+    }
     
     db[key] = (db[key] as any[]).map((r: any) => {
       if (ids.includes(r.id)) {
@@ -3333,7 +3397,9 @@ function calculateCurrentAgeWeeks(
               initialAgeWeeks: Number(body.ageWeeks || 0)
             };
             if (existsIndex !== -1) {
-              db.flocks[existsIndex] = flockObj;
+              // An existing flock: edit it with the shared rules so its cage rows stay in step.
+              const { id: _ignored, initialAgeWeeks: _derived, ...edit } = flockObj;
+              if (updateFlockRecord(db, flockId, edit).error) continue;
             } else {
               db.flocks.push(flockObj);
             }
@@ -3341,15 +3407,12 @@ function calculateCurrentAgeWeeks(
           }
         } else if (endpoint.startsWith("/api/flocks/") && method === "PUT") {
           const id = endpoint.replace("/api/flocks/", "");
-          const idx = db.flocks.findIndex((f: any) => f.id === id);
-          if (idx !== -1 && body) {
-            db.flocks[idx] = { ...db.flocks[idx], ...body };
-            processedCount++;
-          }
+          // Same rules as PUT /api/flocks/:id (checked values, cage rows and linked records kept in step).
+          if (body && !updateFlockRecord(db, id, body).error) processedCount++;
         } else if (endpoint.startsWith("/api/flocks/") && method === "DELETE") {
           const id = endpoint.replace("/api/flocks/", "");
-          db.flocks = db.flocks.filter((f: any) => f.id !== id);
-          db.mortality = db.mortality.filter((m: any) => m.flockId !== id);
+          // Same clean-up as DELETE /api/flocks/:id (cage rows too). Already gone counts as done.
+          deleteFlocksById(db, [id]);
           processedCount++;
         }
         else if (endpoint === "/api/feed" && method === "POST") {
@@ -3406,6 +3469,7 @@ function calculateCurrentAgeWeeks(
               const flockIndex = db.flocks.findIndex((f: any) => f.id === body.flockId);
               if (flockIndex !== -1) {
                 db.flocks[flockIndex].quantity = Math.max(0, db.flocks[flockIndex].quantity - saleObj.quantity);
+                syncFlockCageRows(db, db.flocks[flockIndex]); // as POST /api/sales does
               }
             }
             if (existsIdx !== -1) {
@@ -3442,6 +3506,7 @@ function calculateCurrentAgeWeeks(
             };
             if (flock && existsIdx === -1) {
               flock.quantity = Math.max(0, flock.quantity - mortObj.quantity);
+              syncFlockCageRows(db, flock); // as POST /api/mortality does
             }
             if (existsIdx !== -1) {
               db.mortality[existsIdx] = mortObj;
@@ -3452,6 +3517,10 @@ function calculateCurrentAgeWeeks(
           }
         } else if (endpoint.startsWith("/api/mortality/") && method === "DELETE") {
           const id = endpoint.replace("/api/mortality/", "");
+          // As DELETE /api/mortality/:id: give the birds back to the flock and its cage row.
+          const removed = db.mortality.find((m: any) => m.id === id);
+          const lossFlock = removed && db.flocks.find((f: any) => f.id === removed.flockId);
+          if (lossFlock) { lossFlock.quantity += Number(removed.quantity) || 0; syncFlockCageRows(db, lossFlock); }
           db.mortality = db.mortality.filter((m: any) => m.id !== id);
           processedCount++;
         }
@@ -3504,6 +3573,7 @@ function calculateCurrentAgeWeeks(
             };
             if (flock && existsIdx === -1) {
               flock.quantity = Math.max(0, flock.quantity - eatenObj.quantity);
+              syncFlockCageRows(db, flock); // as POST /api/fowls-eaten does
             }
             if (existsIdx !== -1) {
               db.fowls_eaten[existsIdx] = eatenObj;
@@ -3515,6 +3585,10 @@ function calculateCurrentAgeWeeks(
         } else if (endpoint.startsWith("/api/fowls-eaten/") && method === "DELETE") {
           const id = endpoint.replace("/api/fowls-eaten/", "");
           if (!Array.isArray(db.fowls_eaten)) db.fowls_eaten = [];
+          // As DELETE /api/fowls-eaten/:id: give the birds back to the flock and its cage row.
+          const eaten = db.fowls_eaten.find((fe: any) => fe.id === id);
+          const eatenFlock = eaten && db.flocks.find((f: any) => f.id === eaten.flockId);
+          if (eatenFlock) { eatenFlock.quantity += Number(eaten.quantity) || 0; syncFlockCageRows(db, eatenFlock); }
           db.fowls_eaten = db.fowls_eaten.filter((fe: any) => fe.id !== id);
           processedCount++;
         }
@@ -3604,7 +3678,9 @@ function calculateCurrentAgeWeeks(
           else if (type === "expenses") key = "expenses";
 
           if (key && key in db && Array.isArray(ids)) {
-            db[key] = (db[key] as any[]).filter((r: any) => !ids.includes(r.id));
+            // Flocks: same clean-up as the main bulk delete (loss records and cage rows go too).
+            if (key === "flocks") deleteFlocksById(db, ids);
+            else db[key] = (db[key] as any[]).filter((r: any) => !ids.includes(r.id));
             processedCount++;
           }
         }
@@ -3618,7 +3694,10 @@ function calculateCurrentAgeWeeks(
           else if (type === "mortality") key = "mortality";
           else if (type === "expenses") key = "expenses";
 
-          if (key && key in db && Array.isArray(ids) && updates) {
+          if (key && key in db && Array.isArray(ids) && updates && key === "flocks") {
+            bulkUpdateFlocks(db, ids, updates); // same rules as PUT /api/flocks-bulk
+            processedCount++;
+          } else if (key && key in db && Array.isArray(ids) && updates) {
             db[key] = (db[key] as any[]).map((r: any) => {
               if (ids.includes(r.id)) {
                 return { ...r, ...updates };
