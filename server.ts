@@ -13,6 +13,7 @@ import XLSX from "xlsx";
 import { initializeApp, applicationDefault } from "firebase-admin/app";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
 import { applyFarmAction, ensureFarmArrays, quailEggBalance, isProtectedFarmMutation } from './src/lib/farmActions';
+import { REQUEST_ID_HEADER, DEVICE_ID_HEADER, FORCE_DUPLICATE_HEADER, POSSIBLE_DUPLICATE_CODE, isValidClientId, hasRequestReceipt, addRequestReceipt, addRecentCreates, duplicateRuleFor, findPossibleDuplicate } from './src/lib/syncSafety';
 
 function cameroonDate(date: Date = new Date()): string {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Douala', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).map(part => [part.type, part.value]));
@@ -46,6 +47,9 @@ const cloudDocument = firestoreDb?.doc('app_data/main');
 let cloudRevision = 0;
 const requestSaves = new AsyncLocalStorage<Promise<void>[]>();
 const activityContext = new AsyncLocalStorage<{ actor: string; action: string; detail?: string; logged: boolean }>();
+// Offline sync safety for the current change: its request ID (written in the same save as the change)
+// and, for checked creates, the record IDs that existed before (so new ones are remembered for 48 hours).
+const syncContext = new AsyncLocalStorage<{ requestId?: string; deviceId?: string; actor?: string; createCollection?: string; beforeIds?: Set<string> }>();
 let cloudWriteQueue: Promise<void> = Promise.resolve();
 
 // Ensure backups directory exists
@@ -755,7 +759,8 @@ function loadDb(): any {
   cachedDb = db;
 
   if (needsSave) {
-    saveDb(db);
+    // Housekeeping save while loading: it must not mark the current request as processed.
+    saveDb(db, { maintenance: true });
   }
 
   return structuredClone(cachedDb);
@@ -827,7 +832,13 @@ async function refreshFromCloud() {
 // The cloud document is authoritative. A checked-in or stale local JSON file never uploads on boot.
 const firestoreHydration = refreshFromCloud();
 
-function saveDb(data: any) {
+function saveDb(data: any, options: { maintenance?: boolean } = {}) {
+  const sync = options.maintenance ? undefined : syncContext.getStore();
+  if (sync) {
+    // Same save as the change itself: either both are stored or neither is.
+    if (sync.requestId) addRequestReceipt(data, sync.requestId);
+    if (sync.createCollection && sync.beforeIds) addRecentCreates(data, sync.createCollection, sync.beforeIds, { by: sync.actor, q: sync.requestId, d: sync.deviceId });
+  }
   const activity = activityContext.getStore();
   if (activity && !activity.logged) {
     (data.activity_log ||= []).unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), actor: activity.actor, action: activity.action, detail: activity.detail });
@@ -968,7 +979,7 @@ async function startServer() {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, If-None-Match, X-Auth-Token');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, If-None-Match, X-Auth-Token, X-NVF-Request-Id, X-NVF-Device-Id, X-NVF-Force-Duplicate');
     if (req.method === 'OPTIONS') return res.status(204).end();
     next();
   });
@@ -1001,9 +1012,10 @@ async function startServer() {
           res.removeHeader('Content-Length');
           res.status(error instanceof CloudConflictError ? 409 : 503);
           res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          // code lets the offline queue treat a cloud conflict as "try again later", not as a rejected change.
           send(JSON.stringify({ error: error instanceof CloudConflictError
             ? 'Farm data changed on another device. Please reload and try again.'
-            : 'Farm data was not saved to the cloud. Please try again.' }));
+            : 'Farm data was not saved to the cloud. Please try again.', ...(error instanceof CloudConflictError ? { code: 'CLOUD_CONFLICT' } : {}) }));
         });
         return res;
       }) as typeof res.send;
@@ -1059,6 +1071,40 @@ async function startServer() {
       : `${verb} ${label}`;
     const detail = req.path.startsWith('/farm/actions') && req.body?.kind === 'cage_count_correct' ? String(req.body?.payload?.reason || '').trim().slice(0, 160) : undefined;
     activityContext.run({ actor: String(user.name || user.username || 'Family member'), action, detail, logged: false }, next);
+  });
+
+  // Offline sync safety (see src/lib/syncSafety.ts).
+  // - A change sent again with the same X-NVF-Request-Id is answered as saved and not applied twice.
+  // - A synced create that looks like an entry another phone made in the last 48 hours is not saved;
+  //   the phone asks the person to "Keep both" (resend with X-NVF-Force-Duplicate: 1) or "Discard".
+  // Requests without a request ID get the same answers as before.
+  app.use('/api', (req, res, next) => {
+    if (!['POST', 'PUT', 'DELETE'].includes(req.method) || req.path.startsWith('/auth') || req.path === '/sync') return next();
+    const user = getAuthorizedUser(req);
+    if (!user) return next(); // requireAuth answers 401
+    const rawRequestId = req.get(REQUEST_ID_HEADER);
+    const rawDeviceId = req.get(DEVICE_ID_HEADER);
+    const requestId = isValidClientId(rawRequestId) ? rawRequestId : undefined;
+    const deviceId = isValidClientId(rawDeviceId) ? rawDeviceId : undefined;
+    const fullPath = req.originalUrl.split('?')[0];
+    const rule = duplicateRuleFor(fullPath, req.method, req.body);
+    if (!requestId && !rule) return next();
+    const db = loadDb();
+    if (requestId && hasRequestReceipt(db, requestId)) {
+      return res.json({ success: true, alreadySaved: true });
+    }
+    if (rule && requestId && req.get(FORCE_DUPLICATE_HEADER) !== '1') {
+      const duplicate = findPossibleDuplicate(db, rule, req.body, { q: requestId, d: deviceId });
+      if (duplicate) {
+        return res.status(409).json({
+          error: `This looks like an entry already made by ${duplicate.by || 'someone else'}: ${duplicate.summary}.`,
+          code: POSSIBLE_DUPLICATE_CODE,
+          duplicate
+        });
+      }
+    }
+    const beforeIds = rule ? new Set<string>((Array.isArray(db[rule.collection]) ? db[rule.collection] : []).map((row: any) => row?.id)) : undefined;
+    syncContext.run({ requestId, deviceId, actor: String(user.name || user.username || ''), createCollection: rule?.collection, beforeIds }, next);
   });
 
   // --- API ENDPOINTS ---
