@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Wifi, WifiOff, RefreshCw, CheckCircle2, AlertCircle, Clock, ChevronDown, ChevronUp } from 'lucide-react';
-import { getSyncQueue, getSyncProblem, syncPendingQueue, QueuedMutation } from '../lib/offlineStore';
+import { getSyncQueue, getSyncProblem, syncPendingQueue, QueuedMutation, retryQueuedChange, keepBothQueuedChange, discardQueuedChange } from '../lib/offlineStore';
 
 interface SyncStatusProps {
   token: string | null;
@@ -19,6 +19,14 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [showDetails, setShowDetails] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  // Two-tap confirm for "Discard" (same in-app pattern as cage delete; no window.confirm in Android WebViews).
+  const [confirmDiscardId, setConfirmDiscardId] = useState<string>('');
+  const attentionItems = pendingQueue.filter(item => !!item.status);
+  const waitingItems = pendingQueue.filter(item => !item.status);
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    setTimeout(() => setToastMessage(null), 5000);
+  };
 
   const refreshState = () => {
     setIsOnline(navigator.onLine);
@@ -60,10 +68,14 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
     if (!token || isSyncing) return;
     setIsSyncing(true);
     try {
-      const { success, syncedCount } = await syncPendingQueue(token);
+      const { success, syncedCount, stopped, needsAttention } = await syncPendingQueue(token);
       if (success) {
         setToastMessage(`Successfully synced ${syncedCount} queued record(s) to server database!`);
         setTimeout(() => setToastMessage(null), 4000);
+        if (onSyncComplete) onSyncComplete();
+      } else if (!stopped && needsAttention > 0) {
+        showToast(`${syncedCount} change(s) saved. ${needsAttention} need your attention in the list.`);
+        setShowDetails(true);
         if (onSyncComplete) onSyncComplete();
       } else {
         setToastMessage('Sync partially completed. Some changes remain in queue.');
@@ -78,6 +90,32 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
       setSyncProblem(getSyncProblem());
     }
   };
+
+  // "Retry" and "Keep both" put the change back in line and send it now.
+  const handleResend = async (item: QueuedMutation, keepBoth: boolean) => {
+    if (isSyncing) return;
+    setConfirmDiscardId('');
+    if (keepBoth) keepBothQueuedChange(item.id); else retryQueuedChange(item.id);
+    refreshState();
+    if (navigator.onLine) await handleManualSync();
+    else showToast('Saved on this phone. It will be sent when the internet returns.');
+  };
+
+  const handleDiscard = async (item: QueuedMutation) => {
+    if (isSyncing) return;
+    if (confirmDiscardId !== item.id) { setConfirmDiscardId(item.id); return; }
+    setConfirmDiscardId('');
+    await discardQueuedChange(item.id, token);
+    refreshState();
+    showToast('Change removed from this phone. Nothing already on the farm server was deleted.');
+    if (onSyncComplete) onSyncComplete();
+  };
+
+  const attentionText = (item: QueuedMutation) => item.status === 'duplicate'
+    ? `This looks like an entry already made by ${item.duplicateOf?.by || 'someone else'}: ${item.duplicateOf?.summary || item.description}. Keep both or Discard?`
+    : item.status === 'held'
+    ? (item.error || 'Waiting for an earlier change that did not save.')
+    : `Not saved: ${item.error || 'The farm server refused this change.'}`;
 
   return (
     <div className="relative">
@@ -108,7 +146,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
           className={`flex items-center gap-1 sm:gap-1.5 px-2 py-1.5 sm:px-3 sm:py-1.5 rounded-full text-xs font-semibold transition-all border shadow-sm ${
             !isOnline
               ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
-              : syncProblem
+              : syncProblem || attentionItems.length > 0
               ? 'bg-rose-50 text-rose-800 border-rose-300 hover:bg-rose-100'
               : pendingQueue.length > 0
               ? 'bg-blue-50 text-blue-800 border-blue-300 hover:bg-blue-100'
@@ -126,7 +164,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
             <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600" />
           ) : !isOnline ? (
             <WifiOff className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
-          ) : syncProblem ? (
+          ) : syncProblem || attentionItems.length > 0 ? (
             <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
           ) : pendingQueue.length > 0 ? (
             <AlertCircle className="w-3.5 h-3.5 text-blue-600" />
@@ -139,7 +177,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
               ? 'Syncing...'
               : !isOnline
               ? `On this phone (${pendingQueue.length})`
-              : syncProblem
+              : syncProblem || attentionItems.length > 0
               ? 'Needs attention'
               : pendingQueue.length > 0
               ? `${pendingQueue.length} to share`
@@ -196,13 +234,42 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
           </p>
           {syncProblem && <p role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">Needs attention: {syncProblem}</p>}
 
+          {/* Changes that need the person: refused, possible duplicate, or waiting on one of those */}
+          {attentionItems.length > 0 && (
+            <div className="mb-3 space-y-2">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-rose-500 mb-1">
+                Needs your attention ({attentionItems.length})
+              </div>
+              {attentionItems.map(item => (
+                <div key={item.id} className="bg-rose-50 p-2.5 rounded-xl border border-rose-200" data-sync-attention={item.status}>
+                  <p className="font-semibold text-slate-800 break-words">{item.description}</p>
+                  <p role="alert" className="text-[11px] text-rose-800 mt-1 break-words">{attentionText(item)}</p>
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {item.status === 'failed' && (
+                      <button type="button" disabled={isSyncing} onClick={() => handleResend(item, false)} className="min-h-9 rounded-lg border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-800 disabled:opacity-50">Retry</button>
+                    )}
+                    {item.status === 'duplicate' && (
+                      <button type="button" disabled={isSyncing} onClick={() => handleResend(item, true)} className="min-h-9 rounded-lg border border-emerald-300 bg-white px-3 text-xs font-semibold text-emerald-800 disabled:opacity-50">Keep both</button>
+                    )}
+                    <button type="button" disabled={isSyncing} aria-label={confirmDiscardId === item.id ? `Confirm discard ${item.description}` : `Discard ${item.description}`} onClick={() => handleDiscard(item)} className={`min-h-9 rounded-lg px-3 text-xs font-semibold disabled:opacity-50 ${confirmDiscardId === item.id ? 'bg-rose-600 text-white' : 'border border-rose-300 bg-white text-rose-700'}`}>
+                      {confirmDiscardId === item.id ? 'Tap to confirm discard' : 'Discard'}
+                    </button>
+                    {confirmDiscardId === item.id && (
+                      <button type="button" onClick={() => setConfirmDiscardId('')} className="min-h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700">Cancel</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Pending Sync Queue List */}
-          {pendingQueue.length > 0 ? (
+          {waitingItems.length > 0 ? (
             <div className="mb-3 max-h-48 overflow-y-auto space-y-2 pr-1">
               <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
-                Queued Changes ({pendingQueue.length})
+                Queued Changes ({waitingItems.length})
               </div>
-              {pendingQueue.map(item => (
+              {waitingItems.map(item => (
                 <div
                   key={item.id}
                   className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 flex items-start justify-between gap-2"
@@ -220,7 +287,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
                 </div>
               ))}
             </div>
-          ) : (
+          ) : attentionItems.length > 0 ? null : (
             <div className="bg-emerald-50/50 p-3 rounded-xl border border-emerald-100 text-center mb-3">
               <CheckCircle2 className="w-5 h-5 text-emerald-600 mx-auto mb-1" />
               <p className="text-emerald-800 font-medium text-[11px]">No pending offline changes</p>
@@ -228,7 +295,7 @@ export default function SyncStatus({ token, onSyncComplete }: SyncStatusProps) {
           )}
 
           {/* Sync Action Button */}
-          {isOnline && pendingQueue.length > 0 && (
+          {isOnline && waitingItems.length > 0 && (
             <button
               onClick={handleManualSync}
               disabled={isSyncing}
