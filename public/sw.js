@@ -57,6 +57,21 @@ self.addEventListener('fetch', event => {
     return;
   }
 
+  // Hashed app files never change, so use the phone's saved copy first.
+  if (url.pathname.startsWith('/assets/')) {
+    event.respondWith((async () => {
+      const cached = await caches.match(request);
+      if (cached) return cached;
+      const response = await fetch(request);
+      if (response.ok) {
+        const cache = await caches.open(CACHE_NAME);
+        event.waitUntil(cache.put(request, response.clone()));
+      }
+      return response;
+    })());
+    return;
+  }
+
   event.respondWith((async () => {
     try {
       const response = await fetch(request);

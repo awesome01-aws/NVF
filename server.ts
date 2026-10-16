@@ -3753,7 +3753,13 @@ function calculateCurrentAgeWeeks(
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      setHeaders: (res, filePath) => {
+        // Vite gives app files unique names, so phones can keep them for a year.
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        else if (filePath.endsWith("sw.js") || filePath.endsWith(".html")) res.setHeader("Cache-Control", "no-cache");
+      },
+    }));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });

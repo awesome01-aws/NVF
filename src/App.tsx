@@ -15,6 +15,7 @@ import { RefreshCw, Sparkles } from 'lucide-react';
 import { farmReminders } from './lib/farmReminders';
 import { useFarmNotifications } from './lib/farmNotifications';
 import { useFarmToday } from './lib/useFarmToday';
+import { getOfflineDb } from './lib/offlineStore';
 const NotificationHub = React.lazy(() => import('./components/NotificationHub'));
 const ExcelImportModal = React.lazy(() => import('./components/ExcelImportModal'));
 const GlobalSearchModal = React.lazy(() => import('./components/GlobalSearchModal'));
@@ -47,7 +48,7 @@ export default function App() {
     cage_transfers: CageTransfer[];
     daily_egg_collections?: DailyEggCollection[];
     fowls_eaten?: FowlEatenRecord[];
-  }>({
+  }>(() => ({
     clients: [],
     incubator_records: [],
     flocks: [],
@@ -57,8 +58,10 @@ export default function App() {
     expenses: [],
     cage_transfers: [],
     daily_egg_collections: [],
-    fowls_eaten: []
-  });
+    fowls_eaten: [],
+    // Show the last saved farm data at once; the server copy replaces it moments later.
+    ...(getOfflineDb() as any)
+  }));
 
   // Modal selector for Incubator Record and Client updates
   const [selectedEditRecord, setSelectedEditRecord] = useState<IncubatorRecord | null>(null);
@@ -147,8 +150,14 @@ export default function App() {
 
   // Trigger sync on load, setup active auto-polling background safety
   useEffect(() => {
-    // Initial load - user visible loader is good for initial load
-    syncDatabase(token);
+    // Initial load: skip the full-screen loader when saved data is already on screen.
+    const hasSavedData = ((db.flocks?.length || 0) + (db.clients?.length || 0) + (db.incubator_records?.length || 0)) > 0;
+    syncDatabase(token, hasSavedData);
+
+    // Download the other pages quietly so switching tabs is instant.
+    const preload = () => { import('./components/PoultryMod'); import('./components/IncubatorMod'); import('./components/ReportsMod'); };
+    const idle = (window as any).requestIdleCallback;
+    if (idle) idle(preload, { timeout: 5000 }); else window.setTimeout(preload, 3000);
 
     // Auto-sync interval: checks for updates every 6 seconds while the tab is active (fully silent background sync)
     const pollInterval = setInterval(() => {
